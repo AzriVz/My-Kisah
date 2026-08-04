@@ -31,7 +31,9 @@ static std::string hexadecimal(std::uint64_t value) {
     return output.str();
 }
 
-static std::string identifier(std::string_view name, std::uint64_t address) {
+std::string PseudocodeGenerator::identifierForFunction(
+    std::string_view name,
+    std::uint64_t address) {
     if(name.empty()) {
         return "sub_" + hexadecimal(address).substr(2);
     }
@@ -84,7 +86,8 @@ static std::string callExpression(
                                 ? prototypeAt(prototypes, *statement.callTarget)
                                 : nullptr;
     const auto callee = prototype != nullptr
-                            ? identifier(prototype->name, prototype->address)
+                            ? PseudocodeGenerator::identifierForFunction(
+                                  prototype->name, prototype->address)
                             : statement.callTarget
                                   ? "sub_" + hexadecimal(*statement.callTarget).substr(2)
                                   : "indirect_call";
@@ -397,7 +400,7 @@ std::string PseudocodeGenerator::generate(
     output << (abiAnalysis.returnsValue
                    ? typeName(abiAnalysis.returnType, abiAnalysis.returnBitWidth)
                    : "void")
-           << ' ' << identifier(function.name, function.address) << '(';
+           << ' ' << identifierForFunction(function.name, function.address) << '(';
     for(std::size_t index = 0; index < abiAnalysis.parameters.size(); ++index) {
         if(index > 0) {
             output << ", ";

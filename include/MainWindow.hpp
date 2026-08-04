@@ -3,14 +3,17 @@
 #include <QMainWindow>
 
 #include <cstdint>
+#include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <vector>
 
+class QAction;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
-class QPlainTextEdit;
+class QProgressBar;
 class QString;
 class QTableWidget;
 
@@ -18,6 +21,7 @@ namespace decompiler {
 
 class AnalysisSession;
 class ElfLoader;
+class PseudocodeView;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -37,6 +41,14 @@ private:
     void filterFunctions(const QString& query);
     void displayFunction(QListWidgetItem* item);
     void navigateFromAssembly(int row);
+    void navigateFromPseudocode(std::uint64_t address);
+    void navigateBack();
+    void navigateForward();
+    void recordNavigation(std::uint64_t address);
+    void resetNavigation();
+    void updateNavigationActions();
+    void updatePseudocodeCallTargets();
+    void findPseudocodeText(bool backward);
     bool selectFunction(std::uint64_t address);
 
     std::unique_ptr<AnalysisSession> analysisSession_;
@@ -54,9 +66,16 @@ private:
     QLabel* functionCountValue_ = nullptr;
     QLabel* strippedValue_ = nullptr;
     QLineEdit* functionSearch_ = nullptr;
+    QLineEdit* pseudocodeSearch_ = nullptr;
     QListWidget* functionList_ = nullptr;
-    QPlainTextEdit* pseudocodeView_ = nullptr;
+    PseudocodeView* pseudocodeView_ = nullptr;
     QTableWidget* assemblyTable_ = nullptr;
+    QProgressBar* analysisProgress_ = nullptr;
+    QAction* backAction_ = nullptr;
+    QAction* forwardAction_ = nullptr;
+    std::vector<std::uint64_t> navigationHistory_;
+    std::ptrdiff_t navigationIndex_ = -1;
+    bool restoringNavigation_ = false;
 };
 
 } // namespace decompiler

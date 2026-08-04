@@ -4,16 +4,22 @@
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
 #include "Instruction.hpp"
+#include "PseudocodeGenerator.hpp"
+#include "PseudocodeHighlighter.hpp"
+#include "PseudocodeView.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QApplication>
 #include <QBrush>
 #include <QColor>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -21,18 +27,23 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 static constexpr int addressRole = Qt::UserRole + 1;
 static constexpr int directTargetRole = Qt::UserRole + 2;
@@ -116,6 +127,33 @@ MainWindow::MainWindow(QWidget* parent)
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
 
+    auto* navigateMenu = menuBar()->addMenu(tr("&Navigate"));
+    backAction_ = navigateMenu->addAction(tr("&Back"));
+    backAction_->setObjectName(QStringLiteral("backAction"));
+    backAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Left")));
+    connect(backAction_, &QAction::triggered, this, &MainWindow::navigateBack);
+
+    forwardAction_ = navigateMenu->addAction(tr("&Forward"));
+    forwardAction_->setObjectName(QStringLiteral("forwardAction"));
+    forwardAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Right")));
+    connect(forwardAction_, &QAction::triggered, this, &MainWindow::navigateForward);
+
+    auto* findPseudocodeAction = navigateMenu->addAction(tr("Find in &Pseudocode"));
+    findPseudocodeAction->setObjectName(QStringLiteral("findPseudocodeAction"));
+    findPseudocodeAction->setShortcut(QKeySequence::Find);
+    connect(findPseudocodeAction, &QAction::triggered, this, [this] {
+        pseudocodeSearch_->setFocus();
+        pseudocodeSearch_->selectAll();
+    });
+
+    auto* navigationToolBar = addToolBar(tr("Navigation"));
+    navigationToolBar->setObjectName(QStringLiteral("navigationToolBar"));
+    navigationToolBar->setMovable(false);
+    navigationToolBar->addAction(openAction);
+    navigationToolBar->addSeparator();
+    navigationToolBar->addAction(backAction_);
+    navigationToolBar->addAction(forwardAction_);
+
     auto* centralWidget = new QWidget(this);
     auto* pageLayout = new QVBoxLayout(centralWidget);
 
@@ -197,12 +235,29 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* pseudocodeGroup = new QGroupBox(tr("Reconstructed Pseudocode"), detailSplitter);
     auto* pseudocodeLayout = new QVBoxLayout(pseudocodeGroup);
-    pseudocodeView_ = new QPlainTextEdit(pseudocodeGroup);
+    auto* pseudocodeSearchLayout = new QHBoxLayout;
+    pseudocodeSearch_ = new QLineEdit(pseudocodeGroup);
+    pseudocodeSearch_->setObjectName(QStringLiteral("pseudocodeSearch"));
+    pseudocodeSearch_->setPlaceholderText(tr("Find in pseudocode..."));
+    pseudocodeSearch_->setClearButtonEnabled(true);
+    auto* previousMatchButton = new QToolButton(pseudocodeGroup);
+    previousMatchButton->setObjectName(QStringLiteral("previousPseudocodeMatchButton"));
+    previousMatchButton->setText(QStringLiteral("↑"));
+    previousMatchButton->setToolTip(tr("Previous match"));
+    auto* nextMatchButton = new QToolButton(pseudocodeGroup);
+    nextMatchButton->setObjectName(QStringLiteral("nextPseudocodeMatchButton"));
+    nextMatchButton->setText(QStringLiteral("↓"));
+    nextMatchButton->setToolTip(tr("Next match"));
+    pseudocodeSearchLayout->addWidget(pseudocodeSearch_, 1);
+    pseudocodeSearchLayout->addWidget(previousMatchButton);
+    pseudocodeSearchLayout->addWidget(nextMatchButton);
+    pseudocodeLayout->addLayout(pseudocodeSearchLayout);
+
+    pseudocodeView_ = new PseudocodeView(pseudocodeGroup);
     pseudocodeView_->setObjectName(QStringLiteral("pseudocodeView"));
-    pseudocodeView_->setReadOnly(true);
-    pseudocodeView_->setLineWrapMode(QPlainTextEdit::NoWrap);
     pseudocodeView_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     pseudocodeView_->setPlaceholderText(tr("Open a binary to reconstruct pseudocode."));
+    new PseudocodeHighlighter(pseudocodeView_->document());
     pseudocodeLayout->addWidget(pseudocodeView_);
 
     auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), detailSplitter);
@@ -253,17 +308,56 @@ MainWindow::MainWindow(QWidget* parent)
         &QTableWidget::cellDoubleClicked,
         this,
         [this](int row, int) { navigateFromAssembly(row); });
+    connect(pseudocodeSearch_, &QLineEdit::returnPressed, this, [this] {
+        findPseudocodeText(false);
+    });
+    connect(pseudocodeSearch_, &QLineEdit::textChanged, this, [this](const QString& query) {
+        if(!query.isEmpty()) {
+            auto cursor = pseudocodeView_->textCursor();
+            cursor.movePosition(QTextCursor::Start);
+            pseudocodeView_->setTextCursor(cursor);
+            findPseudocodeText(false);
+        }
+    });
+    connect(previousMatchButton, &QToolButton::clicked, this, [this] {
+        findPseudocodeText(true);
+    });
+    connect(nextMatchButton, &QToolButton::clicked, this, [this] {
+        findPseudocodeText(false);
+    });
+    pseudocodeView_->setCallActivationHandler(
+        [this](std::uint64_t address) { navigateFromPseudocode(address); });
+
+    analysisProgress_ = new QProgressBar(this);
+    analysisProgress_->setObjectName(QStringLiteral("analysisProgress"));
+    analysisProgress_->setRange(0, 0);
+    analysisProgress_->setMaximumWidth(140);
+    analysisProgress_->setTextVisible(false);
+    analysisProgress_->hide();
+    statusBar()->addPermanentWidget(analysisProgress_);
 
     clearBinaryInformation();
     clearAnalysisViews();
+    resetNavigation();
     statusBar()->showMessage(tr("Ready"));
 }
 
 MainWindow::~MainWindow() = default;
 
 bool MainWindow::loadBinary(const std::filesystem::path& path) {
+    resetNavigation();
     clearAnalysisViews();
-    if(!analysisSession_->analyze(path)) {
+    clearBinaryInformation();
+    setWindowTitle(tr("Decompiler"));
+    statusBar()->showMessage(tr("Analyzing %1...").arg(QString::fromStdString(path.string())));
+    analysisProgress_->show();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    const auto analyzed = analysisSession_->analyze(path);
+    QApplication::restoreOverrideCursor();
+    analysisProgress_->hide();
+
+    if(!analyzed) {
         clearBinaryInformation();
         setWindowTitle(tr("Decompiler"));
         statusBar()->showMessage(
@@ -274,6 +368,7 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
 
     updateBinaryInformation();
     populateFunctionList();
+    updatePseudocodeCallTargets();
 
     const auto& metadata = analysisSession_->elfLoader().metadata();
     const auto fileName = QString::fromStdString(metadata.fileName);
@@ -347,7 +442,9 @@ void MainWindow::clearBinaryInformation() {
 
 void MainWindow::clearAnalysisViews() {
     functionSearch_->clear();
+    pseudocodeSearch_->clear();
     functionList_->clear();
+    pseudocodeView_->setCallTargets({});
     pseudocodeView_->clear();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
@@ -441,7 +538,14 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
         return;
     }
 
+    recordNavigation(functionAddress);
     pseudocodeView_->setPlainText(QString::fromStdString(*pseudocode));
+    if(!pseudocodeSearch_->text().isEmpty()) {
+        auto cursor = pseudocodeView_->textCursor();
+        cursor.movePosition(QTextCursor::Start);
+        pseudocodeView_->setTextCursor(cursor);
+        findPseudocodeText(false);
+    }
 
     assemblyTable_->setRowCount(static_cast<int>(instructions->size()));
     for(std::size_t index = 0; index < instructions->size(); ++index) {
@@ -517,6 +621,120 @@ void MainWindow::navigateFromAssembly(int row) {
 
     statusBar()->showMessage(
         tr("Branch target %1 is outside the current function.").arg(hexadecimal(target)));
+}
+
+void MainWindow::navigateFromPseudocode(std::uint64_t address) {
+    if(!selectFunction(address)) {
+        statusBar()->showMessage(
+            tr("Pseudocode call target %1 is outside the discovered functions.")
+                .arg(hexadecimal(address)));
+    }
+}
+
+void MainWindow::navigateBack() {
+    if(navigationIndex_ <= 0) {
+        return;
+    }
+
+    --navigationIndex_;
+    restoringNavigation_ = true;
+    const auto selected = selectFunction(
+        navigationHistory_[static_cast<std::size_t>(navigationIndex_)]);
+    restoringNavigation_ = false;
+    if(!selected) {
+        navigationHistory_.clear();
+        navigationIndex_ = -1;
+    }
+    updateNavigationActions();
+}
+
+void MainWindow::navigateForward() {
+    if(navigationIndex_ < 0
+       || static_cast<std::size_t>(navigationIndex_ + 1) >= navigationHistory_.size()) {
+        return;
+    }
+
+    ++navigationIndex_;
+    restoringNavigation_ = true;
+    const auto selected = selectFunction(
+        navigationHistory_[static_cast<std::size_t>(navigationIndex_)]);
+    restoringNavigation_ = false;
+    if(!selected) {
+        navigationHistory_.clear();
+        navigationIndex_ = -1;
+    }
+    updateNavigationActions();
+}
+
+void MainWindow::recordNavigation(std::uint64_t address) {
+    if(restoringNavigation_) {
+        return;
+    }
+    if(navigationIndex_ >= 0
+       && navigationHistory_[static_cast<std::size_t>(navigationIndex_)] == address) {
+        return;
+    }
+
+    const auto firstForwardEntry = navigationIndex_ + 1;
+    if(firstForwardEntry >= 0
+       && static_cast<std::size_t>(firstForwardEntry) < navigationHistory_.size()) {
+        navigationHistory_.erase(
+            navigationHistory_.begin() + firstForwardEntry,
+            navigationHistory_.end());
+    }
+    navigationHistory_.push_back(address);
+    navigationIndex_ = static_cast<std::ptrdiff_t>(navigationHistory_.size()) - 1;
+    updateNavigationActions();
+}
+
+void MainWindow::resetNavigation() {
+    navigationHistory_.clear();
+    navigationIndex_ = -1;
+    restoringNavigation_ = false;
+    updateNavigationActions();
+}
+
+void MainWindow::updateNavigationActions() {
+    if(backAction_ == nullptr || forwardAction_ == nullptr) {
+        return;
+    }
+    backAction_->setEnabled(navigationIndex_ > 0);
+    forwardAction_->setEnabled(
+        navigationIndex_ >= 0
+        && static_cast<std::size_t>(navigationIndex_ + 1) < navigationHistory_.size());
+}
+
+void MainWindow::updatePseudocodeCallTargets() {
+    std::unordered_map<std::string, std::uint64_t> targets;
+    targets.reserve(analysisSession_->functions().size());
+    for(const auto& function : analysisSession_->functions()) {
+        targets.insert_or_assign(
+            PseudocodeGenerator::identifierForFunction(function.name, function.address),
+            function.address);
+    }
+    pseudocodeView_->setCallTargets(std::move(targets));
+}
+
+void MainWindow::findPseudocodeText(bool backward) {
+    const auto query = pseudocodeSearch_->text();
+    if(query.isEmpty() || pseudocodeView_->document()->isEmpty()) {
+        return;
+    }
+
+    auto flags = QTextDocument::FindFlags {};
+    if(backward) {
+        flags |= QTextDocument::FindBackward;
+    }
+    if(!pseudocodeView_->find(query, flags)) {
+        auto cursor = pseudocodeView_->textCursor();
+        cursor.movePosition(backward ? QTextCursor::End : QTextCursor::Start);
+        pseudocodeView_->setTextCursor(cursor);
+        if(!pseudocodeView_->find(query, flags)) {
+            statusBar()->showMessage(tr("No pseudocode match for “%1”.").arg(query));
+            return;
+        }
+    }
+    statusBar()->showMessage(tr("Pseudocode match: %1").arg(query));
 }
 
 bool MainWindow::selectFunction(std::uint64_t address) {

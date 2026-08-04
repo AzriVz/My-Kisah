@@ -64,8 +64,12 @@ add_library(decompiler_gui STATIC)
 target_sources(decompiler_gui
     PRIVATE
         src/MainWindow.cpp
+        src/PseudocodeHighlighter.cpp
+        src/PseudocodeView.cpp
     PUBLIC
         include/MainWindow.hpp
+        include/PseudocodeHighlighter.hpp
+        include/PseudocodeView.hpp
 )
 
 target_include_directories(decompiler_gui

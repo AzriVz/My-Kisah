@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace decompiler {
 
@@ -23,6 +24,10 @@ struct FunctionPrototype {
 
 class PseudocodeGenerator final {
 public:
+    [[nodiscard]] static std::string identifierForFunction(
+        std::string_view name,
+        std::uint64_t address);
+
     [[nodiscard]] std::string generate(
         const FunctionInfo& function,
         const AbiAnalysisResult& abiAnalysis,
