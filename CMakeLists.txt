@@ -15,6 +15,21 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
 find_package(Capstone REQUIRED)
 
+add_library(decompiler_core STATIC)
+
+target_sources(decompiler_core
+    PRIVATE
+        src/ElfLoader.cpp
+    PUBLIC
+        include/ElfLoader.hpp
+        include/ElfTypes.hpp
+)
+
+target_include_directories(decompiler_core
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+
 add_library(decompiler_gui STATIC)
 
 target_sources(decompiler_gui
@@ -31,6 +46,7 @@ target_include_directories(decompiler_gui
 
 target_link_libraries(decompiler_gui
     PUBLIC
+        decompiler_core
         Qt6::Widgets
 )
 
@@ -52,6 +68,7 @@ function(enable_project_warnings target)
     endif()
 endfunction()
 
+enable_project_warnings(decompiler_core)
 enable_project_warnings(decompiler_gui)
 enable_project_warnings(decompiler)
 
