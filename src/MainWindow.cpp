@@ -2,6 +2,7 @@
 
 #include "AnalysisSession.hpp"
 #include "BinaryPatcher.hpp"
+#include "CallGraphPanel.hpp"
 #include "CallGraphView.hpp"
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
@@ -282,33 +283,11 @@ MainWindow::MainWindow(QWidget* parent)
     new PseudocodeHighlighter(pseudocodeView_->document());
     pseudocodeLayout->addWidget(pseudocodeView_);
 
-    auto* callGraphGroup = new QGroupBox(tr("Function Call Graph"), analysisTabs);
-    auto* callGraphLayout = new QVBoxLayout(callGraphGroup);
-    auto* callGraphControls = new QHBoxLayout;
-    auto* zoomOutButton = new QToolButton(callGraphGroup);
-    zoomOutButton->setObjectName(QStringLiteral("callGraphZoomOutButton"));
-    zoomOutButton->setText(QStringLiteral("−"));
-    zoomOutButton->setToolTip(tr("Zoom out"));
-    auto* resetZoomButton = new QToolButton(callGraphGroup);
-    resetZoomButton->setObjectName(QStringLiteral("callGraphResetZoomButton"));
-    resetZoomButton->setText(tr("Reset"));
-    resetZoomButton->setToolTip(tr("Reset zoom"));
-    auto* zoomInButton = new QToolButton(callGraphGroup);
-    zoomInButton->setObjectName(QStringLiteral("callGraphZoomInButton"));
-    zoomInButton->setText(QStringLiteral("+"));
-    zoomInButton->setToolTip(tr("Zoom in"));
-    callGraphControls->addStretch();
-    callGraphControls->addWidget(zoomOutButton);
-    callGraphControls->addWidget(resetZoomButton);
-    callGraphControls->addWidget(zoomInButton);
-    callGraphLayout->addLayout(callGraphControls);
-
-    callGraphView_ = new CallGraphView(callGraphGroup);
-    callGraphView_->setObjectName(QStringLiteral("callGraphView"));
-    callGraphLayout->addWidget(callGraphView_);
+    callGraphPanel_ = new CallGraphPanel(analysisTabs);
+    callGraphView_ = callGraphPanel_->graphView();
 
     analysisTabs->addTab(pseudocodeGroup, tr("Pseudocode"));
-    analysisTabs->addTab(callGraphGroup, tr("Call Graph"));
+    analysisTabs->addTab(callGraphPanel_, tr("Call Graph"));
 
     auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), detailSplitter);
     auto* assemblyLayout = new QVBoxLayout(assemblyGroup);
@@ -328,6 +307,14 @@ MainWindow::MainWindow(QWidget* parent)
     assemblyTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     assemblyLayout->addWidget(assemblyTable_);
+
+    connect(analysisTabs, &QTabWidget::currentChanged, this, [assemblyGroup, detailSplitter](int index) {
+        const bool callGraphIsActive = index == 1;
+        assemblyGroup->setVisible(!callGraphIsActive);
+        if(!callGraphIsActive) {
+            detailSplitter->setSizes({320, 320});
+        }
+    });
 
     detailSplitter->addWidget(analysisTabs);
     detailSplitter->addWidget(assemblyGroup);
@@ -385,11 +372,11 @@ MainWindow::MainWindow(QWidget* parent)
     });
     pseudocodeView_->setCallActivationHandler(
         [this](std::uint64_t address) { navigateFromPseudocode(address); });
-    callGraphView_->setNodeActivationHandler(
+    callGraphPanel_->setNodeActivationHandler(
         [this](std::uint64_t address) { selectFunction(address); });
-    connect(zoomOutButton, &QToolButton::clicked, callGraphView_, &CallGraphView::zoomOut);
-    connect(resetZoomButton, &QToolButton::clicked, callGraphView_, &CallGraphView::resetZoom);
-    connect(zoomInButton, &QToolButton::clicked, callGraphView_, &CallGraphView::zoomIn);
+    callGraphPanel_->setInstructionProvider([this](std::uint64_t address) {
+        return analysisSession_->instructionsFor(address);
+    });
 
     analysisProgress_ = new QProgressBar(this);
     analysisProgress_->setObjectName(QStringLiteral("analysisProgress"));
@@ -432,7 +419,7 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
     updateBinaryInformation();
     populateFunctionList();
     updatePseudocodeCallTargets();
-    callGraphView_->setGraph(analysisSession_->callGraph());
+    callGraphPanel_->setGraph(analysisSession_->callGraph());
 
     const auto& metadata = analysisSession_->elfLoader().metadata();
     const auto fileName = QString::fromStdString(metadata.fileName);
@@ -677,7 +664,7 @@ void MainWindow::clearAnalysisViews() {
     functionList_->clear();
     pseudocodeView_->setCallTargets({});
     pseudocodeView_->clear();
-    callGraphView_->clearGraph();
+    callGraphPanel_->clearGraph();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
     patchInstructionAction_->setEnabled(false);
@@ -775,7 +762,7 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
     }
 
     recordNavigation(functionAddress);
-    callGraphView_->setActiveFunction(functionAddress);
+    callGraphPanel_->setActiveFunction(functionAddress);
     pseudocodeView_->setPlainText(QString::fromStdString(*pseudocode));
     if(!pseudocodeSearch_->text().isEmpty()) {
         auto cursor = pseudocodeView_->textCursor();

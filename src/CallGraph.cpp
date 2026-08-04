@@ -31,6 +31,7 @@ bool CallGraph::build(
         nodes_.push_back(CallGraphNode {
             .address = function.address,
             .name = function.name,
+            .size = function.size,
             .isExternal = false,
         });
     }
@@ -55,6 +56,7 @@ bool CallGraph::build(
                 nodes_.push_back(CallGraphNode {
                     .address = target,
                     .name = externalFunctionName(target),
+                    .size = 0,
                     .isExternal = true,
                 });
             }

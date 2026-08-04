@@ -21,6 +21,7 @@ class QTableWidget;
 namespace decompiler {
 
 class AnalysisSession;
+class CallGraphPanel;
 class CallGraphView;
 class ElfLoader;
 class PseudocodeView;
@@ -77,6 +78,7 @@ private:
     QLineEdit* pseudocodeSearch_ = nullptr;
     QListWidget* functionList_ = nullptr;
     PseudocodeView* pseudocodeView_ = nullptr;
+    CallGraphPanel* callGraphPanel_ = nullptr;
     CallGraphView* callGraphView_ = nullptr;
     QTableWidget* assemblyTable_ = nullptr;
     QProgressBar* analysisProgress_ = nullptr;

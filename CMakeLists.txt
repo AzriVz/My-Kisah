@@ -68,12 +68,20 @@ add_library(decompiler_gui STATIC)
 target_sources(decompiler_gui
     PRIVATE
         src/MainWindow.cpp
+        src/CallGraphLayoutEngine.cpp
+        src/CallGraphPanel.cpp
         src/CallGraphView.cpp
+        src/GraphOverviewWidget.cpp
+        src/IsolatedSubgraphTableModel.cpp
         src/PseudocodeHighlighter.cpp
         src/PseudocodeView.cpp
     PUBLIC
         include/MainWindow.hpp
+        include/CallGraphLayoutEngine.hpp
+        include/CallGraphPanel.hpp
         include/CallGraphView.hpp
+        include/GraphOverviewWidget.hpp
+        include/IsolatedSubgraphTableModel.hpp
         include/PseudocodeHighlighter.hpp
         include/PseudocodeView.hpp
 )

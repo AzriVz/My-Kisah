@@ -14,6 +14,7 @@ namespace decompiler {
 struct CallGraphNode {
     std::uint64_t address = 0;
     std::string name;
+    std::uint64_t size = 0;
     bool isExternal = false;
 };
 

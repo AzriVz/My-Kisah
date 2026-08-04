@@ -3,144 +3,495 @@
 #include "CallGraph.hpp"
 
 #include <QApplication>
-#include <QBrush>
-#include <QColor>
+#include <QClipboard>
+#include <QContextMenuEvent>
 #include <QFontDatabase>
+#include <QFontMetricsF>
 #include <QGraphicsItem>
-#include <QGraphicsRectItem>
 #include <QGraphicsScene>
-#include <QGraphicsTextItem>
+#include <QGraphicsSceneMouseEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPen>
-#include <QString>
+#include <QPainterPathStroker>
+#include <QResizeEvent>
+#include <QScrollBar>
+#include <QSignalBlocker>
+#include <QShowEvent>
+#include <QStyleOptionGraphicsItem>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
-#include <vector>
+#include <iomanip>
+#include <sstream>
 #include <utility>
 
 static constexpr int callGraphAddressRole = 1;
-static constexpr int callGraphExternalRole = 2;
-static constexpr qreal nodeWidth = 176.0;
-static constexpr qreal nodeHeight = 58.0;
+static constexpr int callGraphNodeRole = 2;
+static constexpr qreal callGraphNodeWidth = 328.0;
+static constexpr qreal callGraphNodeHeight = 158.0;
+static constexpr std::size_t maximumAssemblyPreviewLines = 6;
+static constexpr qreal minimumGraphScale = 0.05;
+static constexpr qreal maximumGraphScale = 5.0;
+static constexpr qreal graphZoomStep = 1.15;
 
 static QString graphAddress(std::uint64_t address) {
     return QStringLiteral("0x") + QString::number(address, 16).toUpper();
 }
 
+static QString graphSize(std::uint64_t size) {
+    return QStringLiteral("0x") + QString::number(size, 16).toUpper();
+}
+
 namespace decompiler {
+
+class CallGraphNodeItem final : public QGraphicsItem {
+public:
+    enum { Type = QGraphicsItem::UserType + 31 };
+
+    CallGraphNodeItem(
+        CallGraphNode node,
+        std::size_t incoming,
+        std::size_t outgoing,
+        const std::vector<Instruction>* instructions)
+        : node_(std::move(node))
+        , incoming_(incoming)
+        , outgoing_(outgoing)
+        , instructions_(instructions) {
+        setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsFocusable);
+        setAcceptHoverEvents(true);
+        setCursor(Qt::PointingHandCursor);
+        setData(callGraphAddressRole, static_cast<qulonglong>(node_.address));
+        setData(callGraphNodeRole, true);
+        setZValue(2.0);
+        setToolTip(
+            QStringLiteral(
+                "%1\nAddress: %2\nInstructions: %3\nIncoming: %4\nOutgoing: %5\nSize: %6\nStatus: %7")
+                .arg(
+                    QString::fromStdString(node_.name),
+                    graphAddress(node_.address),
+                    QString::number(instructions_ == nullptr ? 0 : instructions_->size()),
+                    QString::number(incoming_),
+                    QString::number(outgoing_),
+                    graphSize(node_.size),
+                    node_.isExternal ? QStringLiteral("external / unresolved")
+                                     : QStringLiteral("internal")));
+    }
+
+    [[nodiscard]] int type() const override {
+        return Type;
+    }
+
+    [[nodiscard]] QRectF boundingRect() const override {
+        return QRectF(0.0, 0.0, callGraphNodeWidth, callGraphNodeHeight);
+    }
+
+    [[nodiscard]] const CallGraphNode& node() const noexcept {
+        return node_;
+    }
+
+    [[nodiscard]] std::size_t displayedAssemblyLineCount() const noexcept {
+        return instructions_ == nullptr
+                   ? 0
+                   : std::min(instructions_->size(), maximumAssemblyPreviewLines);
+    }
+
+    [[nodiscard]] QPointF inputAnchor() const {
+        return mapToScene(QPointF(callGraphNodeWidth / 2.0, 0.0));
+    }
+
+    [[nodiscard]] QPointF outputAnchor() const {
+        return mapToScene(QPointF(callGraphNodeWidth / 2.0, callGraphNodeHeight));
+    }
+
+    void paint(
+        QPainter* painter,
+        const QStyleOptionGraphicsItem*,
+        QWidget*) override {
+        const bool selected = isSelected();
+        QColor border(QStringLiteral("#707070"));
+        QColor header(QStringLiteral("#E2E2E2"));
+        QColor body(QStringLiteral("#F8F8F8"));
+        if(hovered_) {
+            border = QColor(QStringLiteral("#4E4E4E"));
+            header = QColor(QStringLiteral("#DCDCDC"));
+            body = QColor(QStringLiteral("#F4F4F4"));
+        }
+        if(selected) {
+            border = QColor(QStringLiteral("#252525"));
+            header = QColor(QStringLiteral("#D2D2D2"));
+            body = QColor(QStringLiteral("#F1F1F1"));
+        }
+
+        QPen borderPen(border, selected ? 2.2 : 1.0);
+        if(node_.isExternal) {
+            borderPen.setStyle(Qt::DashLine);
+        }
+        painter->setPen(borderPen);
+        painter->setBrush(body);
+        painter->drawRect(boundingRect());
+
+        constexpr qreal headerHeight = 27.0;
+        painter->fillRect(QRectF(0.5, 0.5, callGraphNodeWidth - 1.0, headerHeight), header);
+        painter->setPen(QPen(border, 0.8));
+        painter->drawLine(QPointF(0.5, headerHeight), QPointF(callGraphNodeWidth - 0.5, headerHeight));
+
+        auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        font.setPointSizeF(8.5);
+        font.setBold(true);
+        painter->setFont(font);
+        painter->setPen(QColor(QStringLiteral("#202020")));
+        const QFontMetricsF headerMetrics(font);
+        const auto addressText = graphAddress(node_.address);
+        const auto addressWidth = headerMetrics.horizontalAdvance(addressText);
+        const QRectF nameRect(7.0, 3.0, callGraphNodeWidth - addressWidth - 21.0, 21.0);
+        const auto name = node_.name.empty()
+                              ? QStringLiteral("sub_%1").arg(QString::number(node_.address, 16))
+                              : QString::fromStdString(node_.name);
+        painter->drawText(
+            nameRect,
+            Qt::AlignLeft | Qt::AlignVCenter,
+            headerMetrics.elidedText(name, Qt::ElideRight, nameRect.width()));
+        painter->drawText(
+            QRectF(callGraphNodeWidth - addressWidth - 7.0, 3.0, addressWidth, 21.0),
+            Qt::AlignRight | Qt::AlignVCenter,
+            addressText);
+
+        font.setBold(false);
+        font.setPointSizeF(7.7);
+        painter->setFont(font);
+        const QFontMetricsF instructionMetrics(font);
+        constexpr qreal instructionTop = 31.0;
+        constexpr qreal instructionLineHeight = 15.5;
+        constexpr qreal instructionAddressWidth = 79.0;
+        constexpr qreal instructionMnemonicWidth = 61.0;
+
+        if(node_.isExternal) {
+            painter->setPen(QColor(QStringLiteral("#666666")));
+            painter->drawText(
+                QRectF(7.0, instructionTop, callGraphNodeWidth - 14.0, 93.0),
+                Qt::AlignCenter,
+                QStringLiteral("<external target - no local assembly>"));
+        } else if(instructions_ == nullptr || instructions_->empty()) {
+            painter->setPen(QColor(QStringLiteral("#666666")));
+            painter->drawText(
+                QRectF(7.0, instructionTop, callGraphNodeWidth - 14.0, 93.0),
+                Qt::AlignCenter,
+                QStringLiteral("<no decoded instructions>"));
+        } else {
+            for(std::size_t index = 0; index < displayedAssemblyLineCount(); ++index) {
+                const auto& instruction = instructions_->at(index);
+                const auto top = instructionTop
+                                 + static_cast<qreal>(index) * instructionLineHeight;
+                painter->setPen(QColor(QStringLiteral("#666666")));
+                painter->drawText(
+                    QRectF(7.0, top, instructionAddressWidth, instructionLineHeight),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    graphAddress(instruction.address));
+
+                font.setBold(true);
+                painter->setFont(font);
+                painter->setPen(QColor(QStringLiteral("#202020")));
+                const QRectF mnemonicRect(
+                    88.0, top, instructionMnemonicWidth, instructionLineHeight);
+                painter->drawText(
+                    mnemonicRect,
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    instructionMetrics.elidedText(
+                        QString::fromStdString(instruction.mnemonic),
+                        Qt::ElideRight,
+                        mnemonicRect.width()));
+
+                font.setBold(false);
+                painter->setFont(font);
+                const QRectF operandRect(
+                    151.0,
+                    top,
+                    callGraphNodeWidth - 158.0,
+                    instructionLineHeight);
+                painter->drawText(
+                    operandRect,
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    instructionMetrics.elidedText(
+                        QString::fromStdString(instruction.operandText),
+                        Qt::ElideRight,
+                        operandRect.width()));
+            }
+        }
+
+        constexpr qreal footerTop = 128.5;
+        painter->setPen(QPen(QColor(QStringLiteral("#B0B0B0")), 0.8));
+        painter->drawLine(
+            QPointF(0.5, footerTop),
+            QPointF(callGraphNodeWidth - 0.5, footerTop));
+        font.setBold(false);
+        font.setPointSizeF(7.4);
+        painter->setFont(font);
+        painter->setPen(QColor(QStringLiteral("#505050")));
+        const auto instructionCount = instructions_ == nullptr ? 0 : instructions_->size();
+        const auto footer = node_.isExternal
+                                ? QStringLiteral("external | in %1 | out %2")
+                                      .arg(incoming_)
+                                      .arg(outgoing_)
+                                : QStringLiteral("showing %1/%2 instructions | in %3 | out %4 | size %5")
+                                      .arg(displayedAssemblyLineCount())
+                                      .arg(instructionCount)
+                                      .arg(incoming_)
+                                      .arg(outgoing_)
+                                      .arg(graphSize(node_.size));
+        painter->drawText(
+            QRectF(7.0, footerTop + 1.0, callGraphNodeWidth - 14.0, 25.0),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            footer);
+    }
+
+protected:
+    QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
+        if(change == QGraphicsItem::ItemSelectedHasChanged) {
+            setZValue(value.toBool() ? 8.0 : 2.0);
+            update();
+        }
+        return QGraphicsItem::itemChange(change, value);
+    }
+
+    void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override {
+        hovered_ = true;
+        update();
+        QGraphicsItem::hoverEnterEvent(event);
+    }
+
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override {
+        hovered_ = false;
+        update();
+        QGraphicsItem::hoverLeaveEvent(event);
+    }
+
+private:
+    CallGraphNode node_;
+    std::size_t incoming_ = 0;
+    std::size_t outgoing_ = 0;
+    const std::vector<Instruction>* instructions_ = nullptr;
+    bool hovered_ = false;
+};
+
+class CallGraphEdgeItem final : public QGraphicsItem {
+public:
+    enum { Type = QGraphicsItem::UserType + 32 };
+
+    CallGraphEdgeItem(
+        CallGraphNodeItem* source,
+        CallGraphNodeItem* target,
+        bool external,
+        std::size_t routeIndex)
+        : source_(source)
+        , target_(target)
+        , external_(external)
+        , recursive_(source == target) {
+        setZValue(-4.0);
+        setAcceptedMouseButtons(Qt::NoButton);
+        buildPath(routeIndex);
+    }
+
+    [[nodiscard]] int type() const override {
+        return Type;
+    }
+
+    [[nodiscard]] QRectF boundingRect() const override {
+        return bounds_;
+    }
+
+    [[nodiscard]] QPainterPath scenePath() const {
+        return mapToScene(path_);
+    }
+
+    [[nodiscard]] bool connects(std::uint64_t address) const noexcept {
+        return source_->node().address == address || target_->node().address == address;
+    }
+
+    void setSelectionContext(bool hasSelection, bool connected) {
+        const auto nextState = !hasSelection ? 0 : connected ? 1 : 2;
+        if(selectionState_ != nextState) {
+            selectionState_ = nextState;
+            update();
+        }
+    }
+
+    void paint(
+        QPainter* painter,
+        const QStyleOptionGraphicsItem*,
+        QWidget*) override {
+        QColor color = external_ ? QColor(QStringLiteral("#6D7B85"))
+                                 : QColor(QStringLiteral("#3B9B52"));
+        if(recursive_) {
+            color = QColor(QStringLiteral("#B56B32"));
+        }
+        if(selectionState_ == 1) {
+            color = external_ ? QColor(QStringLiteral("#3E6F86"))
+                              : QColor(QStringLiteral("#157F3B"));
+        } else if(selectionState_ == 2) {
+            color.setAlpha(70);
+        }
+
+        QPen pen(color, selectionState_ == 1 ? 2.4 : 1.35);
+        pen.setJoinStyle(Qt::MiterJoin);
+        pen.setCapStyle(Qt::SquareCap);
+        if(recursive_) {
+            pen.setStyle(Qt::DashLine);
+        }
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path_);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(color);
+        painter->drawPolygon(arrowHead_);
+    }
+
+private:
+    void buildPath(std::size_t routeIndex) {
+        const auto sourceRect = source_->sceneBoundingRect();
+        const auto targetRect = target_->sceneBoundingRect();
+        const auto start = source_->outputAnchor();
+        const auto end = target_->inputAnchor();
+        const auto laneOffset = static_cast<qreal>(routeIndex % 5) * 7.0;
+
+        path_ = QPainterPath {};
+        path_.moveTo(start);
+        if(recursive_) {
+            const auto right = sourceRect.right() + 42.0 + laneOffset;
+            const auto above = sourceRect.top() - 28.0 - laneOffset;
+            path_.lineTo(start.x(), sourceRect.bottom() + 25.0);
+            path_.lineTo(right, sourceRect.bottom() + 25.0);
+            path_.lineTo(right, above);
+            path_.lineTo(end.x(), above);
+            path_.lineTo(end);
+        } else if(end.y() > start.y() + 22.0) {
+            const auto middleY = start.y() + (end.y() - start.y()) / 2.0 + laneOffset;
+            path_.lineTo(start.x(), middleY);
+            path_.lineTo(end.x(), middleY);
+            path_.lineTo(end);
+        } else {
+            const auto right = std::max(sourceRect.right(), targetRect.right())
+                               + 38.0 + laneOffset;
+            const auto above = targetRect.top() - 28.0 - laneOffset;
+            path_.lineTo(start.x(), start.y() + 24.0);
+            path_.lineTo(right, start.y() + 24.0);
+            path_.lineTo(right, above);
+            path_.lineTo(end.x(), above);
+            path_.lineTo(end);
+        }
+
+        const auto elementCount = path_.elementCount();
+        const auto last = path_.elementAt(elementCount - 1);
+        const auto previous = path_.elementAt(elementCount - 2);
+        const QPointF endPoint(last.x, last.y);
+        QPointF direction(endPoint.x() - previous.x, endPoint.y() - previous.y);
+        const auto length = std::hypot(direction.x(), direction.y());
+        if(length > 0.0) {
+            direction /= length;
+        } else {
+            direction = QPointF(0.0, 1.0);
+        }
+        const QPointF normal(-direction.y(), direction.x());
+        constexpr qreal arrowLength = 9.0;
+        constexpr qreal arrowWidth = 4.5;
+        const auto base = endPoint - direction * arrowLength;
+        arrowHead_ = QPolygonF {
+            endPoint,
+            base + normal * arrowWidth,
+            base - normal * arrowWidth,
+        };
+
+        bounds_ = path_.boundingRect().united(arrowHead_.boundingRect()).adjusted(-5.0, -5.0, 5.0, 5.0);
+    }
+
+    CallGraphNodeItem* source_ = nullptr;
+    CallGraphNodeItem* target_ = nullptr;
+    bool external_ = false;
+    bool recursive_ = false;
+    int selectionState_ = 0;
+    QPainterPath path_;
+    QPolygonF arrowHead_;
+    QRectF bounds_;
+};
 
 CallGraphView::CallGraphView(QWidget* parent)
     : QGraphicsView(parent) {
     setScene(new QGraphicsScene(this));
     setRenderHint(QPainter::Antialiasing, true);
-    setDragMode(QGraphicsView::ScrollHandDrag);
+    setRenderHint(QPainter::TextAntialiasing, true);
+    setDragMode(QGraphicsView::NoDrag);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
-    setBackgroundBrush(QColor(QStringLiteral("#F8FAFC")));
+    setBackgroundBrush(QColor(QStringLiteral("#EAF3F4")));
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setFrameShape(QFrame::StyledPanel);
+    setFocusPolicy(Qt::StrongFocus);
+    scene()->setItemIndexMethod(QGraphicsScene::BspTreeIndex);
+    connect(scene(), &QGraphicsScene::selectionChanged, this, [this] {
+        updateSelectionState();
+    });
+}
+
+CallGraphView::~CallGraphView() {
+    viewportChangedHandler_ = {};
+    selectionChangedHandler_ = {};
+    if(scene() != nullptr) {
+        disconnect(scene(), nullptr, this, nullptr);
+    }
 }
 
 void CallGraphView::setGraph(const CallGraph& graph) {
-    clearGraph();
-    edgeCount_ = graph.edges().size();
-    if(graph.nodes().empty()) {
-        return;
+    graph_ = &graph;
+    rebuildScene(false);
+    fitOnNextShow_ = true;
+    if(isVisible()) {
+        fitOnNextShow_ = false;
+        fitAll();
     }
-
-    const auto columns = std::max<std::size_t>(
-        1, static_cast<std::size_t>(std::ceil(std::sqrt(graph.nodes().size()))));
-    constexpr qreal horizontalGap = 76.0;
-    constexpr qreal verticalGap = 66.0;
-    std::unordered_map<std::uint64_t, QPointF> positions;
-    positions.reserve(graph.nodes().size());
-
-    for(std::size_t index = 0; index < graph.nodes().size(); ++index) {
-        const auto row = index / columns;
-        const auto column = index % columns;
-        positions.emplace(
-            graph.nodes()[index].address,
-            QPointF(
-                static_cast<qreal>(column) * (nodeWidth + horizontalGap),
-                static_cast<qreal>(row) * (nodeHeight + verticalGap)));
-    }
-
-    QPen edgePen(QColor(QStringLiteral("#94A3B8")));
-    edgePen.setWidthF(1.6);
-    for(const auto& edge : graph.edges()) {
-        const auto caller = positions.find(edge.callerAddress);
-        const auto callee = positions.find(edge.calleeAddress);
-        if(caller == positions.end() || callee == positions.end()) {
-            continue;
-        }
-        const QPointF start = caller->second + QPointF(nodeWidth / 2.0, nodeHeight / 2.0);
-        const QPointF end = callee->second + QPointF(nodeWidth / 2.0, nodeHeight / 2.0);
-        if(edge.callerAddress == edge.calleeAddress) {
-            auto* loop = scene()->addEllipse(
-                caller->second.x() + nodeWidth - 22.0,
-                caller->second.y() - 22.0,
-                42.0,
-                42.0,
-                edgePen);
-            loop->setZValue(-1.0);
-        } else {
-            auto* line = scene()->addLine(QLineF(start, end), edgePen);
-            line->setZValue(-1.0);
-        }
-    }
-
-    const auto fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    for(const auto& node : graph.nodes()) {
-        const auto position = positions.at(node.address);
-        auto* rectangle = scene()->addRect(QRectF(position, QSizeF(nodeWidth, nodeHeight)));
-        rectangle->setData(callGraphAddressRole, static_cast<qulonglong>(node.address));
-        rectangle->setData(callGraphExternalRole, node.isExternal);
-        rectangle->setFlag(QGraphicsItem::ItemIsSelectable, true);
-        rectangle->setToolTip(
-            QStringLiteral("%1\n%2").arg(QString::fromStdString(node.name), graphAddress(node.address)));
-
-        auto* label = new QGraphicsTextItem(rectangle);
-        label->setFont(fixedFont);
-        label->setPlainText(
-            QStringLiteral("%1\n%2")
-                .arg(QString::fromStdString(node.name), graphAddress(node.address)));
-        label->setTextWidth(nodeWidth - 16.0);
-        label->setPos(8.0, 5.0);
-        label->setDefaultTextColor(QColor(QStringLiteral("#0F172A")));
-        applyNodeStyle(rectangle, node.address == activeFunction_, node.isExternal);
-        nodeItems_.emplace(node.address, rectangle);
-    }
-
-    scene()->setSceneRect(scene()->itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
-    fitInView(scene()->sceneRect(), Qt::KeepAspectRatio);
 }
 
 void CallGraphView::clearGraph() {
+    rebuildingScene_ = true;
+    fitOnNextShow_ = false;
+    graph_ = nullptr;
     scene()->clear();
     nodeItems_.clear();
-    edgeCount_ = 0;
+    edgeItems_.clear();
+    components_.clear();
     activeFunction_ = 0;
     resetTransform();
+    auto* message = scene()->addText(tr("No call graph data available."));
+    message->setDefaultTextColor(QColor(QStringLiteral("#536B70")));
+    message->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    message->setPos(24.0, 24.0);
+    scene()->setSceneRect(message->boundingRect().translated(message->pos()).adjusted(-20.0, -20.0, 40.0, 40.0));
+    rebuildingScene_ = false;
+    notifyViewportChanged();
+}
+
+void CallGraphView::refreshLayout() {
+    if(graph_ == nullptr) {
+        clearGraph();
+        return;
+    }
+    rebuildScene(true);
+    fitAll();
 }
 
 void CallGraphView::setActiveFunction(std::uint64_t address) {
-    const auto oldNode = nodeItems_.find(activeFunction_);
-    if(oldNode != nodeItems_.end()) {
-        applyNodeStyle(
-            oldNode->second,
-            false,
-            oldNode->second->data(callGraphExternalRole).toBool());
+    activeFunction_ = address;
+    const auto node = nodeItems_.find(address);
+    if(node == nodeItems_.end()) {
+        return;
     }
 
-    activeFunction_ = address;
-    const auto newNode = nodeItems_.find(activeFunction_);
-    if(newNode != nodeItems_.end()) {
-        applyNodeStyle(
-            newNode->second,
-            true,
-            newNode->second->data(callGraphExternalRole).toBool());
-    }
+    const QSignalBlocker blocker(scene());
+    scene()->clearSelection();
+    node->second->setSelected(true);
+    updateSelectionState();
+    ensureVisible(node->second, 32, 32);
 }
 
 void CallGraphView::setNodeActivationHandler(
@@ -148,20 +499,82 @@ void CallGraphView::setNodeActivationHandler(
     nodeActivationHandler_ = std::move(handler);
 }
 
-void CallGraphView::zoomIn() {
-    if(zoomFactor() < 4.0) {
-        scale(1.2, 1.2);
+void CallGraphView::setInstructionProvider(
+    std::function<const std::vector<Instruction>*(std::uint64_t)> provider) {
+    instructionProvider_ = std::move(provider);
+    if(graph_ != nullptr) {
+        rebuildScene(true);
     }
 }
 
+void CallGraphView::setSelectionChangedHandler(
+    std::function<void(std::optional<std::uint64_t>)> handler) {
+    selectionChangedHandler_ = std::move(handler);
+}
+
+void CallGraphView::setViewportChangedHandler(std::function<void()> handler) {
+    viewportChangedHandler_ = std::move(handler);
+}
+
+void CallGraphView::zoomIn() {
+    applyZoom(graphZoomStep);
+}
+
 void CallGraphView::zoomOut() {
-    if(zoomFactor() > 0.2) {
-        scale(1.0 / 1.2, 1.0 / 1.2);
-    }
+    applyZoom(1.0 / graphZoomStep);
 }
 
 void CallGraphView::resetZoom() {
     resetTransform();
+    notifyViewportChanged();
+}
+
+void CallGraphView::fitAll() {
+    if(nodeItems_.empty()) {
+        resetZoom();
+        return;
+    }
+    fitInView(scene()->sceneRect(), Qt::KeepAspectRatio);
+    limitFitScale(1.0);
+    notifyViewportChanged();
+}
+
+void CallGraphView::fitSelection() {
+    const auto selected = selectedFunction();
+    if(!selected) {
+        return;
+    }
+    const auto node = nodeItems_.find(*selected);
+    if(node != nodeItems_.end()) {
+        fitInView(node->second->sceneBoundingRect().adjusted(-70.0, -70.0, 70.0, 70.0), Qt::KeepAspectRatio);
+        limitFitScale(2.5);
+        notifyViewportChanged();
+    }
+}
+
+bool CallGraphView::fitComponent(std::size_t componentIndex) {
+    if(componentIndex >= components_.size()) {
+        return false;
+    }
+    fitInView(components_[componentIndex].sceneBounds, Qt::KeepAspectRatio);
+    limitFitScale(2.5);
+    notifyViewportChanged();
+    return true;
+}
+
+bool CallGraphView::centerOnNode(std::uint64_t address) {
+    const auto node = nodeItems_.find(address);
+    if(node == nodeItems_.end()) {
+        return false;
+    }
+    centerOn(node->second);
+    notifyViewportChanged();
+    return true;
+}
+
+void CallGraphView::centerOnScenePoint(const QPointF& point) {
+    centerOn(point);
+    notifyViewportChanged();
 }
 
 std::size_t CallGraphView::nodeCount() const noexcept {
@@ -169,7 +582,7 @@ std::size_t CallGraphView::nodeCount() const noexcept {
 }
 
 std::size_t CallGraphView::edgeCount() const noexcept {
-    return edgeCount_;
+    return edgeItems_.size();
 }
 
 qreal CallGraphView::zoomFactor() const noexcept {
@@ -178,6 +591,68 @@ qreal CallGraphView::zoomFactor() const noexcept {
 
 std::uint64_t CallGraphView::activeFunction() const noexcept {
     return activeFunction_;
+}
+
+std::optional<std::uint64_t> CallGraphView::selectedFunction() const noexcept {
+    for(auto* item : scene()->selectedItems()) {
+        if(const auto* node = nodeItemFor(item)) {
+            return node->node().address;
+        }
+    }
+    return std::nullopt;
+}
+
+const std::vector<CallGraphComponent>& CallGraphView::components() const noexcept {
+    return components_;
+}
+
+std::optional<std::size_t>
+CallGraphView::componentIndexForAddress(std::uint64_t address) const noexcept {
+    for(std::size_t index = 0; index < components_.size(); ++index) {
+        const auto& addresses = components_[index].nodeAddresses;
+        if(std::find(addresses.begin(), addresses.end(), address) != addresses.end()) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<QRectF> CallGraphView::nodeSceneBounds() const {
+    std::vector<QRectF> result;
+    result.reserve(nodeItems_.size());
+    for(const auto& [address, item] : nodeItems_) {
+        static_cast<void>(address);
+        result.push_back(item->sceneBoundingRect());
+    }
+    return result;
+}
+
+std::size_t
+CallGraphView::displayedAssemblyLineCount(std::uint64_t address) const noexcept {
+    const auto node = nodeItems_.find(address);
+    return node == nodeItems_.end() ? 0 : node->second->displayedAssemblyLineCount();
+}
+
+std::optional<QRectF>
+CallGraphView::nodeSceneRect(std::uint64_t address) const noexcept {
+    const auto node = nodeItems_.find(address);
+    if(node == nodeItems_.end()) {
+        return std::nullopt;
+    }
+    return node->second->sceneBoundingRect();
+}
+
+std::vector<QPainterPath> CallGraphView::edgeScenePaths() const {
+    std::vector<QPainterPath> result;
+    result.reserve(edgeItems_.size());
+    for(const auto* edge : edgeItems_) {
+        result.push_back(edge->scenePath());
+    }
+    return result;
+}
+
+QRectF CallGraphView::viewportSceneRect() const {
+    return mapToScene(viewport()->rect()).boundingRect();
 }
 
 bool CallGraphView::activateNode(std::uint64_t address) {
@@ -189,57 +664,256 @@ bool CallGraphView::activateNode(std::uint64_t address) {
 }
 
 void CallGraphView::wheelEvent(QWheelEvent* event) {
-    if(event->angleDelta().y() > 0) {
-        zoomIn();
-    } else if(event->angleDelta().y() < 0) {
-        zoomOut();
+    if((event->modifiers() & Qt::ControlModifier) == 0) {
+        QGraphicsView::wheelEvent(event);
+        notifyViewportChanged();
+        return;
     }
+    applyZoom(event->angleDelta().y() >= 0 ? graphZoomStep : 1.0 / graphZoomStep);
     event->accept();
 }
 
-void CallGraphView::mousePressEvent(QMouseEvent* event) {
-    pressPosition_ = event->position().toPoint();
-    QGraphicsView::mousePressEvent(event);
+void CallGraphView::resizeEvent(QResizeEvent* event) {
+    QGraphicsView::resizeEvent(event);
+    if(fitOnNextShow_ && isVisible()) {
+        fitOnNextShow_ = false;
+        fitAll();
+        return;
+    }
+    notifyViewportChanged();
 }
 
-void CallGraphView::mouseReleaseEvent(QMouseEvent* event) {
-    const auto releasePosition = event->position().toPoint();
-    const bool isClick = (releasePosition - pressPosition_).manhattanLength()
-                         <= QApplication::startDragDistance();
-    QGraphicsView::mouseReleaseEvent(event);
-    if(!isClick || event->button() != Qt::LeftButton) {
+void CallGraphView::showEvent(QShowEvent* event) {
+    QGraphicsView::showEvent(event);
+    if(fitOnNextShow_) {
+        fitOnNextShow_ = false;
+        fitAll();
+    }
+}
+
+void CallGraphView::scrollContentsBy(int dx, int dy) {
+    QGraphicsView::scrollContentsBy(dx, dy);
+    notifyViewportChanged();
+}
+
+void CallGraphView::mousePressEvent(QMouseEvent* event) {
+    if(event->button() == Qt::MiddleButton) {
+        middlePanning_ = true;
+        panPosition_ = event->position().toPoint();
+        viewport()->setCursor(Qt::ClosedHandCursor);
+        event->accept();
         return;
     }
 
-    auto* rectangle = nodeItemFor(itemAt(releasePosition));
-    if(rectangle != nullptr) {
-        static_cast<void>(
-            activateNode(rectangle->data(callGraphAddressRole).toULongLong()));
+    if(event->button() == Qt::LeftButton) {
+        auto* node = nodeItemFor(itemAt(event->position().toPoint()));
+        scene()->clearSelection();
+        if(node != nullptr) {
+            node->setSelected(true);
+            node->setFocus();
+        }
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void CallGraphView::mouseMoveEvent(QMouseEvent* event) {
+    if(middlePanning_) {
+        const auto position = event->position().toPoint();
+        const auto delta = position - panPosition_;
+        panPosition_ = position;
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+void CallGraphView::mouseReleaseEvent(QMouseEvent* event) {
+    if(event->button() == Qt::MiddleButton && middlePanning_) {
+        middlePanning_ = false;
+        viewport()->unsetCursor();
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
+}
+
+void CallGraphView::mouseDoubleClickEvent(QMouseEvent* event) {
+    if(event->button() == Qt::LeftButton) {
+        if(auto* node = nodeItemFor(itemAt(event->position().toPoint()))) {
+            static_cast<void>(activateNode(node->node().address));
+            event->accept();
+            return;
+        }
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+}
+
+void CallGraphView::contextMenuEvent(QContextMenuEvent* event) {
+    auto* node = nodeItemFor(itemAt(event->pos()));
+    if(node == nullptr) {
+        QGraphicsView::contextMenuEvent(event);
+        return;
+    }
+
+    scene()->clearSelection();
+    node->setSelected(true);
+    QMenu menu(this);
+    auto* openAction = menu.addAction(tr("Open Function"));
+    auto* fitAction = menu.addAction(tr("Fit Node"));
+    auto* centerAction = menu.addAction(tr("Center Here"));
+    menu.addSeparator();
+    auto* copyNameAction = menu.addAction(tr("Copy Function Name"));
+    auto* copyAddressAction = menu.addAction(tr("Copy Address"));
+    const auto* chosen = menu.exec(event->globalPos());
+    if(chosen == openAction) {
+        static_cast<void>(activateNode(node->node().address));
+    } else if(chosen == fitAction) {
+        fitSelection();
+    } else if(chosen == centerAction) {
+        centerOn(node);
+        notifyViewportChanged();
+    } else if(chosen == copyNameAction) {
+        QApplication::clipboard()->setText(QString::fromStdString(node->node().name));
+    } else if(chosen == copyAddressAction) {
+        QApplication::clipboard()->setText(graphAddress(node->node().address));
     }
 }
 
-void CallGraphView::applyNodeStyle(
-    QGraphicsRectItem* item,
-    bool active,
-    bool external) {
-    QPen pen(active ? QColor(QStringLiteral("#2563EB"))
-                    : QColor(QStringLiteral("#64748B")));
-    pen.setWidthF(active ? 3.0 : 1.4);
-    if(external) {
-        pen.setStyle(Qt::DashLine);
+void CallGraphView::rebuildScene(bool preserveSelection) {
+    const auto previouslySelected = preserveSelection ? selectedFunction() : std::nullopt;
+    rebuildingScene_ = true;
+    scene()->clear();
+    nodeItems_.clear();
+    edgeItems_.clear();
+    components_.clear();
+
+    if(graph_ == nullptr || graph_->nodes().empty()) {
+        auto* message = scene()->addText(tr("No call graph data available."));
+        message->setDefaultTextColor(QColor(QStringLiteral("#536B70")));
+        message->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        message->setPos(24.0, 24.0);
+        scene()->setSceneRect(
+            message->boundingRect().translated(message->pos()).adjusted(-20.0, -20.0, 40.0, 40.0));
+        rebuildingScene_ = false;
+        notifyViewportChanged();
+        return;
     }
-    item->setPen(pen);
-    item->setBrush(
-        active ? QColor(QStringLiteral("#DBEAFE"))
-               : external ? QColor(QStringLiteral("#E2E8F0"))
-                          : QColor(QStringLiteral("#FFFFFF")));
+
+    std::unordered_map<std::uint64_t, std::size_t> incoming;
+    std::unordered_map<std::uint64_t, std::size_t> outgoing;
+    incoming.reserve(graph_->nodes().size());
+    outgoing.reserve(graph_->nodes().size());
+    for(const auto& node : graph_->nodes()) {
+        incoming.emplace(node.address, 0);
+        outgoing.emplace(node.address, 0);
+    }
+    for(const auto& edge : graph_->edges()) {
+        ++incoming[edge.calleeAddress];
+        ++outgoing[edge.callerAddress];
+    }
+
+    const CallGraphLayoutEngine layoutEngine;
+    auto layout = layoutEngine.layout(
+        *graph_, QSizeF(callGraphNodeWidth, callGraphNodeHeight));
+    components_ = std::move(layout.components);
+    nodeItems_.reserve(graph_->nodes().size());
+    for(const auto& node : graph_->nodes()) {
+        const auto* instructions = instructionProvider_ == nullptr
+                                       ? nullptr
+                                       : instructionProvider_(node.address);
+        auto* item = new CallGraphNodeItem(
+            node,
+            incoming[node.address],
+            outgoing[node.address],
+            instructions);
+        const auto position = layout.nodePositions.find(node.address);
+        if(position != layout.nodePositions.end()) {
+            item->setPos(position->second);
+        }
+        scene()->addItem(item);
+        nodeItems_.emplace(node.address, item);
+    }
+
+    edgeItems_.reserve(graph_->edges().size());
+    std::size_t routeIndex = 0;
+    for(const auto& edge : graph_->edges()) {
+        const auto source = nodeItems_.find(edge.callerAddress);
+        const auto target = nodeItems_.find(edge.calleeAddress);
+        if(source == nodeItems_.end() || target == nodeItems_.end()) {
+            continue;
+        }
+        auto* edgeItem = new CallGraphEdgeItem(
+            source->second,
+            target->second,
+            target->second->node().isExternal,
+            routeIndex++);
+        scene()->addItem(edgeItem);
+        edgeItems_.push_back(edgeItem);
+    }
+
+    scene()->setSceneRect(scene()->itemsBoundingRect().adjusted(-55.0, -55.0, 55.0, 55.0));
+    const auto selectionToRestore = previouslySelected.value_or(activeFunction_);
+    if(selectionToRestore != 0) {
+        const auto selectedItem = nodeItems_.find(selectionToRestore);
+        if(selectedItem != nodeItems_.end()) {
+            selectedItem->second->setSelected(true);
+        }
+    }
+    rebuildingScene_ = false;
+    updateSelectionState();
+    notifyViewportChanged();
 }
 
-QGraphicsRectItem* CallGraphView::nodeItemFor(QGraphicsItem* item) const noexcept {
+void CallGraphView::updateSelectionState() {
+    const auto selected = selectedFunction();
+    for(auto* edge : edgeItems_) {
+        edge->setSelectionContext(selected.has_value(), selected && edge->connects(*selected));
+    }
+    if(!rebuildingScene_ && selectionChangedHandler_) {
+        selectionChangedHandler_(selected);
+    }
+    viewport()->update();
+}
+
+void CallGraphView::applyZoom(qreal factor) {
+    const auto currentScale = zoomFactor();
+    if(currentScale <= 0.0) {
+        return;
+    }
+    const auto targetScale = std::clamp(
+        currentScale * factor, minimumGraphScale, maximumGraphScale);
+    if(qFuzzyCompare(currentScale, targetScale)) {
+        return;
+    }
+    scale(targetScale / currentScale, targetScale / currentScale);
+    notifyViewportChanged();
+}
+
+void CallGraphView::limitFitScale(qreal maximumScale) {
+    const auto currentScale = zoomFactor();
+    if(currentScale <= 0.0) {
+        return;
+    }
+    const auto targetScale = std::clamp(
+        currentScale, minimumGraphScale, maximumScale);
+    if(!qFuzzyCompare(currentScale, targetScale)) {
+        scale(targetScale / currentScale, targetScale / currentScale);
+    }
+}
+
+void CallGraphView::notifyViewportChanged() {
+    if(viewportChangedHandler_) {
+        viewportChangedHandler_();
+    }
+}
+
+CallGraphNodeItem* CallGraphView::nodeItemFor(QGraphicsItem* item) const noexcept {
     while(item != nullptr) {
-        if(item->type() == QGraphicsRectItem::Type
-           && item->data(callGraphAddressRole).isValid()) {
-            return static_cast<QGraphicsRectItem*>(item);
+        if(item->type() == CallGraphNodeItem::Type
+           && item->data(callGraphNodeRole).toBool()) {
+            return static_cast<CallGraphNodeItem*>(item);
         }
         item = item->parentItem();
     }
