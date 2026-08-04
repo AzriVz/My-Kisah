@@ -7,8 +7,17 @@
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <utility>
 
 namespace decompiler {
+
+static std::string registerName(csh handle, unsigned int registerId) {
+    if(registerId == X86_REG_INVALID) {
+        return {};
+    }
+    const auto* name = cs_reg_name(handle, registerId);
+    return name == nullptr ? std::string {} : std::string(name);
+}
 
 static void freeCapstoneInstruction(cs_insn* instruction) noexcept {
     if(instruction != nullptr) {
@@ -52,6 +61,70 @@ static InstructionKind classifyInstruction(
     return InstructionKind::ConditionalJump;
 }
 
+static InstructionOperand copyOperand(csh handle, const cs_x86_op& source) {
+    InstructionOperand operand;
+    operand.size = source.size;
+    operand.isRead = (source.access & CS_AC_READ) != 0;
+    operand.isWritten = (source.access & CS_AC_WRITE) != 0;
+
+    switch(source.type) {
+    case X86_OP_REG:
+        operand.kind = OperandKind::Register;
+        operand.registerName = registerName(handle, source.reg);
+        break;
+    case X86_OP_IMM:
+        operand.kind = OperandKind::Immediate;
+        operand.immediate = source.imm;
+        break;
+    case X86_OP_MEM:
+        operand.kind = OperandKind::Memory;
+        operand.memory.segmentRegister = registerName(handle, source.mem.segment);
+        operand.memory.baseRegister = registerName(handle, source.mem.base);
+        operand.memory.indexRegister = registerName(handle, source.mem.index);
+        operand.memory.scale = source.mem.scale;
+        operand.memory.displacement = source.mem.disp;
+        break;
+    case X86_OP_INVALID:
+        operand.kind = OperandKind::Invalid;
+        break;
+    }
+
+    return operand;
+}
+
+static void copyRegisterAccess(csh handle, const cs_insn& source, Instruction& destination) {
+    cs_regs registersRead {};
+    cs_regs registersWritten {};
+    std::uint8_t readCount = 0;
+    std::uint8_t writeCount = 0;
+    if(cs_regs_access(
+           handle,
+           &source,
+           registersRead,
+           &readCount,
+           registersWritten,
+           &writeCount)
+       != CS_ERR_OK) {
+        return;
+    }
+
+    destination.registersRead.reserve(readCount);
+    for(std::uint8_t index = 0; index < readCount; ++index) {
+        auto name = registerName(handle, registersRead[index]);
+        if(!name.empty()) {
+            destination.registersRead.push_back(std::move(name));
+        }
+    }
+
+    destination.registersWritten.reserve(writeCount);
+    for(std::uint8_t index = 0; index < writeCount; ++index) {
+        auto name = registerName(handle, registersWritten[index]);
+        if(!name.empty()) {
+            destination.registersWritten.push_back(std::move(name));
+        }
+    }
+}
+
 static Instruction copyInstruction(csh handle, const cs_insn& source) {
     Instruction instruction;
     instruction.address = source.address;
@@ -60,6 +133,15 @@ static Instruction copyInstruction(csh handle, const cs_insn& source) {
     instruction.operandText = source.op_str;
     instruction.directTarget = directTarget(source);
     instruction.kind = classifyInstruction(handle, source, instruction.directTarget);
+    instruction.architectureId = source.id;
+    if(source.detail != nullptr) {
+        const auto& x86 = source.detail->x86;
+        instruction.operands.reserve(x86.op_count);
+        for(std::uint8_t index = 0; index < x86.op_count; ++index) {
+            instruction.operands.push_back(copyOperand(handle, x86.operands[index]));
+        }
+        copyRegisterAccess(handle, source, instruction);
+    }
     return instruction;
 }
 
@@ -75,6 +157,10 @@ static Instruction invalidInstruction(std::uint64_t address, std::uint8_t byte) 
         .operandText = operand.str(),
         .kind = InstructionKind::Invalid,
         .directTarget = std::nullopt,
+        .architectureId = 0,
+        .operands = {},
+        .registersRead = {},
+        .registersWritten = {},
     };
 }
 

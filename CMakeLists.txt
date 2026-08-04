@@ -19,13 +19,17 @@ add_library(decompiler_core STATIC)
 
 target_sources(decompiler_core
     PRIVATE
+        src/AbiAnalyzer.cpp
         src/AnalysisSession.cpp
         src/BasicBlockBuilder.cpp
         src/ControlFlowGraph.cpp
         src/Disassembler.cpp
         src/ElfLoader.cpp
         src/FunctionDiscovery.cpp
+        src/IRLifter.cpp
+        src/Register.cpp
     PUBLIC
+        include/AbiAnalyzer.hpp
         include/AnalysisSession.hpp
         include/BasicBlock.hpp
         include/BasicBlockBuilder.hpp
@@ -36,6 +40,9 @@ target_sources(decompiler_core
         include/FunctionInfo.hpp
         include/FunctionDiscovery.hpp
         include/Instruction.hpp
+        include/IR.hpp
+        include/IRLifter.hpp
+        include/Register.hpp
 )
 
 target_include_directories(decompiler_core

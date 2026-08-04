@@ -1,9 +1,11 @@
 #pragma once
 
+#include "AbiAnalyzer.hpp"
 #include "ControlFlowGraph.hpp"
 #include "Disassembler.hpp"
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
+#include "IR.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -28,6 +30,10 @@ public:
     instructionsFor(std::uint64_t functionAddress) const noexcept;
     [[nodiscard]] const ControlFlowGraph*
     controlFlowGraphFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const AbiAnalysisResult*
+    abiAnalysisFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const IRFunction*
+    irFor(std::uint64_t functionAddress) const noexcept;
 
 private:
     ElfLoader elfLoader_;
@@ -35,6 +41,8 @@ private:
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::uint64_t, std::vector<Instruction>> instructionCache_;
     std::unordered_map<std::uint64_t, ControlFlowGraph> controlFlowGraphCache_;
+    std::unordered_map<std::uint64_t, AbiAnalysisResult> abiAnalysisCache_;
+    std::unordered_map<std::uint64_t, IRFunction> irCache_;
     std::string errorMessage_;
     bool valid_ = false;
 };

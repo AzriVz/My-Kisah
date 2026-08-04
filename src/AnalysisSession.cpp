@@ -2,6 +2,7 @@
 
 #include "BasicBlockBuilder.hpp"
 #include "FunctionDiscovery.hpp"
+#include "IRLifter.hpp"
 
 #include <algorithm>
 #include <string>
@@ -40,7 +41,11 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
 
     instructionCache_.reserve(functions_.size());
     controlFlowGraphCache_.reserve(functions_.size());
+    abiAnalysisCache_.reserve(functions_.size());
+    irCache_.reserve(functions_.size());
     const BasicBlockBuilder basicBlockBuilder;
+    const AbiAnalyzer abiAnalyzer;
+    const IRLifter irLifter;
     for(const auto& function : functions_) {
         const auto sectionOffset = function.address - text->address;
         if(sectionOffset > textBytes.size() || function.size > textBytes.size() - sectionOffset) {
@@ -48,6 +53,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             functions_.clear();
             instructionCache_.clear();
             controlFlowGraphCache_.clear();
+            abiAnalysisCache_.clear();
+            irCache_.clear();
             return false;
         }
 
@@ -61,6 +68,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             functions_.clear();
             instructionCache_.clear();
             controlFlowGraphCache_.clear();
+            abiAnalysisCache_.clear();
+            irCache_.clear();
             return false;
         }
 
@@ -71,10 +80,16 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             functions_.clear();
             instructionCache_.clear();
             controlFlowGraphCache_.clear();
+            abiAnalysisCache_.clear();
+            irCache_.clear();
             return false;
         }
 
+        auto abiAnalysis = abiAnalyzer.analyze(result.instructions);
+        auto ir = irLifter.lift(function, result.instructions, abiAnalysis);
         controlFlowGraphCache_.emplace(function.address, std::move(controlFlowGraph));
+        abiAnalysisCache_.emplace(function.address, std::move(abiAnalysis));
+        irCache_.emplace(function.address, std::move(ir));
         instructionCache_.emplace(function.address, std::move(result.instructions));
     }
 
@@ -87,6 +102,8 @@ void AnalysisSession::reset() noexcept {
     functions_.clear();
     instructionCache_.clear();
     controlFlowGraphCache_.clear();
+    abiAnalysisCache_.clear();
+    irCache_.clear();
     errorMessage_.clear();
     valid_ = false;
 }
@@ -138,6 +155,23 @@ AnalysisSession::controlFlowGraphFor(std::uint64_t functionAddress) const noexce
         return nullptr;
     }
     return &graph->second;
+}
+
+const AbiAnalysisResult*
+AnalysisSession::abiAnalysisFor(std::uint64_t functionAddress) const noexcept {
+    const auto analysis = abiAnalysisCache_.find(functionAddress);
+    if(analysis == abiAnalysisCache_.end()) {
+        return nullptr;
+    }
+    return &analysis->second;
+}
+
+const IRFunction* AnalysisSession::irFor(std::uint64_t functionAddress) const noexcept {
+    const auto ir = irCache_.find(functionAddress);
+    if(ir == irCache_.end()) {
+        return nullptr;
+    }
+    return &ir->second;
 }
 
 } // namespace decompiler
