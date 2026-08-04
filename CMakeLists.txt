@@ -20,11 +20,16 @@ add_library(decompiler_core STATIC)
 target_sources(decompiler_core
     PRIVATE
         src/AnalysisSession.cpp
+        src/BasicBlockBuilder.cpp
+        src/ControlFlowGraph.cpp
         src/Disassembler.cpp
         src/ElfLoader.cpp
         src/FunctionDiscovery.cpp
     PUBLIC
         include/AnalysisSession.hpp
+        include/BasicBlock.hpp
+        include/BasicBlockBuilder.hpp
+        include/ControlFlowGraph.hpp
         include/Disassembler.hpp
         include/ElfLoader.hpp
         include/ElfTypes.hpp

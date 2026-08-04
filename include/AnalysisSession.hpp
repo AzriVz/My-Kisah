@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ControlFlowGraph.hpp"
 #include "Disassembler.hpp"
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
@@ -25,15 +26,17 @@ public:
     [[nodiscard]] const FunctionInfo* functionAt(std::uint64_t address) const noexcept;
     [[nodiscard]] const std::vector<Instruction>*
     instructionsFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const ControlFlowGraph*
+    controlFlowGraphFor(std::uint64_t functionAddress) const noexcept;
 
 private:
     ElfLoader elfLoader_;
     Disassembler disassembler_;
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::uint64_t, std::vector<Instruction>> instructionCache_;
+    std::unordered_map<std::uint64_t, ControlFlowGraph> controlFlowGraphCache_;
     std::string errorMessage_;
     bool valid_ = false;
 };
 
 } // namespace decompiler
-

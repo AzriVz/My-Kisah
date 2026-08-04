@@ -1,5 +1,6 @@
 #include "AnalysisSession.hpp"
 
+#include "BasicBlockBuilder.hpp"
 #include "FunctionDiscovery.hpp"
 
 #include <algorithm>
@@ -38,12 +39,15 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
     }
 
     instructionCache_.reserve(functions_.size());
+    controlFlowGraphCache_.reserve(functions_.size());
+    const BasicBlockBuilder basicBlockBuilder;
     for(const auto& function : functions_) {
         const auto sectionOffset = function.address - text->address;
         if(sectionOffset > textBytes.size() || function.size > textBytes.size() - sectionOffset) {
             errorMessage_ = "A discovered function points outside the .text section.";
             functions_.clear();
             instructionCache_.clear();
+            controlFlowGraphCache_.clear();
             return false;
         }
 
@@ -56,9 +60,21 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             errorMessage_ = result.errorMessage;
             functions_.clear();
             instructionCache_.clear();
+            controlFlowGraphCache_.clear();
             return false;
         }
 
+        ControlFlowGraph controlFlowGraph;
+        auto blocks = basicBlockBuilder.build(result.instructions);
+        if(!controlFlowGraph.build(std::move(blocks))) {
+            errorMessage_ = std::string(controlFlowGraph.errorMessage());
+            functions_.clear();
+            instructionCache_.clear();
+            controlFlowGraphCache_.clear();
+            return false;
+        }
+
+        controlFlowGraphCache_.emplace(function.address, std::move(controlFlowGraph));
         instructionCache_.emplace(function.address, std::move(result.instructions));
     }
 
@@ -70,6 +86,7 @@ void AnalysisSession::reset() noexcept {
     elfLoader_.reset();
     functions_.clear();
     instructionCache_.clear();
+    controlFlowGraphCache_.clear();
     errorMessage_.clear();
     valid_ = false;
 }
@@ -112,6 +129,15 @@ AnalysisSession::instructionsFor(std::uint64_t functionAddress) const noexcept {
         return nullptr;
     }
     return &instructions->second;
+}
+
+const ControlFlowGraph*
+AnalysisSession::controlFlowGraphFor(std::uint64_t functionAddress) const noexcept {
+    const auto graph = controlFlowGraphCache_.find(functionAddress);
+    if(graph == controlFlowGraphCache_.end()) {
+        return nullptr;
+    }
+    return &graph->second;
 }
 
 } // namespace decompiler
