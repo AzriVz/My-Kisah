@@ -23,10 +23,12 @@ target_sources(decompiler_core
         src/AnalysisSession.cpp
         src/BasicBlockBuilder.cpp
         src/ControlFlowGraph.cpp
+        src/DataFlowAnalyzer.cpp
         src/Disassembler.cpp
         src/ElfLoader.cpp
         src/FunctionDiscovery.cpp
         src/IRLifter.cpp
+        src/PseudocodeGenerator.cpp
         src/Register.cpp
     PUBLIC
         include/AbiAnalyzer.hpp
@@ -34,6 +36,7 @@ target_sources(decompiler_core
         include/BasicBlock.hpp
         include/BasicBlockBuilder.hpp
         include/ControlFlowGraph.hpp
+        include/DataFlowAnalyzer.hpp
         include/Disassembler.hpp
         include/ElfLoader.hpp
         include/ElfTypes.hpp
@@ -42,6 +45,7 @@ target_sources(decompiler_core
         include/Instruction.hpp
         include/IR.hpp
         include/IRLifter.hpp
+        include/PseudocodeGenerator.hpp
         include/Register.hpp
 )
 

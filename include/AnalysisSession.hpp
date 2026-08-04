@@ -2,6 +2,7 @@
 
 #include "AbiAnalyzer.hpp"
 #include "ControlFlowGraph.hpp"
+#include "DataFlowAnalyzer.hpp"
 #include "Disassembler.hpp"
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
@@ -34,6 +35,10 @@ public:
     abiAnalysisFor(std::uint64_t functionAddress) const noexcept;
     [[nodiscard]] const IRFunction*
     irFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const DataFlowAnalysis*
+    dataFlowFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const std::string*
+    pseudocodeFor(std::uint64_t functionAddress) const noexcept;
 
 private:
     ElfLoader elfLoader_;
@@ -43,6 +48,8 @@ private:
     std::unordered_map<std::uint64_t, ControlFlowGraph> controlFlowGraphCache_;
     std::unordered_map<std::uint64_t, AbiAnalysisResult> abiAnalysisCache_;
     std::unordered_map<std::uint64_t, IRFunction> irCache_;
+    std::unordered_map<std::uint64_t, DataFlowAnalysis> dataFlowCache_;
+    std::unordered_map<std::uint64_t, std::string> pseudocodeCache_;
     std::string errorMessage_;
     bool valid_ = false;
 };

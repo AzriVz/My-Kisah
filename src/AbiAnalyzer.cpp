@@ -166,14 +166,28 @@ AbiAnalysisResult AbiAnalyzer::analyze(std::span<const Instruction> instructions
             const auto base = RegisterNormalizer::normalize(operand.memory.baseRegister);
             const auto index = RegisterNormalizer::normalize(operand.memory.indexRegister);
             if(base) {
-                registersRead.insert_or_assign(base->id, *base);
+                auto baseUsage = *base;
+                if(instruction.architectureId == X86_INS_LEA
+                   && !instruction.operands.empty()
+                   && instruction.operands.front().size != 0) {
+                    baseUsage.bitWidth = static_cast<std::uint8_t>(
+                        instruction.operands.front().size * 8);
+                }
+                registersRead.insert_or_assign(base->id, baseUsage);
                 if(instruction.architectureId != X86_INS_LEA
                    && !writtenRegisters.contains(base->id)) {
                     recordRegisterParameter(parameters, *base, ValueType::Pointer);
                 }
             }
             if(index) {
-                registersRead.insert_or_assign(index->id, *index);
+                auto indexUsage = *index;
+                if(instruction.architectureId == X86_INS_LEA
+                   && !instruction.operands.empty()
+                   && instruction.operands.front().size != 0) {
+                    indexUsage.bitWidth = static_cast<std::uint8_t>(
+                        instruction.operands.front().size * 8);
+                }
+                registersRead.insert_or_assign(index->id, indexUsage);
             }
 
             if(base && base->id == RegisterId::Rbp) {

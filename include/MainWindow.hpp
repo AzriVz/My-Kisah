@@ -10,6 +10,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QPlainTextEdit;
 class QString;
 class QTableWidget;
 
@@ -54,6 +55,7 @@ private:
     QLabel* strippedValue_ = nullptr;
     QLineEdit* functionSearch_ = nullptr;
     QListWidget* functionList_ = nullptr;
+    QPlainTextEdit* pseudocodeView_ = nullptr;
     QTableWidget* assemblyTable_ = nullptr;
 };
 

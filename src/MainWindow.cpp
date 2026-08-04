@@ -21,6 +21,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
@@ -191,7 +192,20 @@ MainWindow::MainWindow(QWidget* parent)
     functionList_->setSelectionMode(QAbstractItemView::SingleSelection);
     functionLayout->addWidget(functionList_, 1);
 
-    auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), analysisSplitter);
+    auto* detailSplitter = new QSplitter(Qt::Vertical, analysisSplitter);
+    detailSplitter->setObjectName(QStringLiteral("detailSplitter"));
+
+    auto* pseudocodeGroup = new QGroupBox(tr("Reconstructed Pseudocode"), detailSplitter);
+    auto* pseudocodeLayout = new QVBoxLayout(pseudocodeGroup);
+    pseudocodeView_ = new QPlainTextEdit(pseudocodeGroup);
+    pseudocodeView_->setObjectName(QStringLiteral("pseudocodeView"));
+    pseudocodeView_->setReadOnly(true);
+    pseudocodeView_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    pseudocodeView_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    pseudocodeView_->setPlaceholderText(tr("Open a binary to reconstruct pseudocode."));
+    pseudocodeLayout->addWidget(pseudocodeView_);
+
+    auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), detailSplitter);
     auto* assemblyLayout = new QVBoxLayout(assemblyGroup);
     assemblyTable_ = new QTableWidget(assemblyGroup);
     assemblyTable_->setObjectName(QStringLiteral("assemblyTable"));
@@ -210,8 +224,14 @@ MainWindow::MainWindow(QWidget* parent)
     assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     assemblyLayout->addWidget(assemblyTable_);
 
+    detailSplitter->addWidget(pseudocodeGroup);
+    detailSplitter->addWidget(assemblyGroup);
+    detailSplitter->setStretchFactor(0, 1);
+    detailSplitter->setStretchFactor(1, 1);
+    detailSplitter->setSizes({320, 320});
+
     analysisSplitter->addWidget(functionPanel);
-    analysisSplitter->addWidget(assemblyGroup);
+    analysisSplitter->addWidget(detailSplitter);
     analysisSplitter->setStretchFactor(0, 1);
     analysisSplitter->setStretchFactor(1, 4);
     analysisSplitter->setSizes({260, 900});
@@ -328,6 +348,7 @@ void MainWindow::clearBinaryInformation() {
 void MainWindow::clearAnalysisViews() {
     functionSearch_->clear();
     functionList_->clear();
+    pseudocodeView_->clear();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
 }
@@ -404,6 +425,7 @@ void MainWindow::filterFunctions(const QString& query) {
 }
 
 void MainWindow::displayFunction(QListWidgetItem* item) {
+    pseudocodeView_->clear();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
     if(item == nullptr) {
@@ -413,10 +435,13 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
     const auto functionAddress = item->data(addressRole).toULongLong();
     const auto* function = analysisSession_->functionAt(functionAddress);
     const auto* instructions = analysisSession_->instructionsFor(functionAddress);
-    if(function == nullptr || instructions == nullptr) {
-        statusBar()->showMessage(tr("No cached assembly is available for this function."));
+    const auto* pseudocode = analysisSession_->pseudocodeFor(functionAddress);
+    if(function == nullptr || instructions == nullptr || pseudocode == nullptr) {
+        statusBar()->showMessage(tr("No cached analysis is available for this function."));
         return;
     }
+
+    pseudocodeView_->setPlainText(QString::fromStdString(*pseudocode));
 
     assemblyTable_->setRowCount(static_cast<int>(instructions->size()));
     for(std::size_t index = 0; index < instructions->size(); ++index) {

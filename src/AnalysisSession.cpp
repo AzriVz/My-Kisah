@@ -3,6 +3,7 @@
 #include "BasicBlockBuilder.hpp"
 #include "FunctionDiscovery.hpp"
 #include "IRLifter.hpp"
+#include "PseudocodeGenerator.hpp"
 
 #include <algorithm>
 #include <string>
@@ -43,6 +44,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
     controlFlowGraphCache_.reserve(functions_.size());
     abiAnalysisCache_.reserve(functions_.size());
     irCache_.reserve(functions_.size());
+    dataFlowCache_.reserve(functions_.size());
+    pseudocodeCache_.reserve(functions_.size());
     const BasicBlockBuilder basicBlockBuilder;
     const AbiAnalyzer abiAnalyzer;
     const IRLifter irLifter;
@@ -55,6 +58,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             controlFlowGraphCache_.clear();
             abiAnalysisCache_.clear();
             irCache_.clear();
+            dataFlowCache_.clear();
+            pseudocodeCache_.clear();
             return false;
         }
 
@@ -70,6 +75,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             controlFlowGraphCache_.clear();
             abiAnalysisCache_.clear();
             irCache_.clear();
+            dataFlowCache_.clear();
+            pseudocodeCache_.clear();
             return false;
         }
 
@@ -82,6 +89,8 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
             controlFlowGraphCache_.clear();
             abiAnalysisCache_.clear();
             irCache_.clear();
+            dataFlowCache_.clear();
+            pseudocodeCache_.clear();
             return false;
         }
 
@@ -91,6 +100,35 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
         abiAnalysisCache_.emplace(function.address, std::move(abiAnalysis));
         irCache_.emplace(function.address, std::move(ir));
         instructionCache_.emplace(function.address, std::move(result.instructions));
+    }
+
+    std::vector<FunctionPrototype> prototypes;
+    prototypes.reserve(functions_.size());
+    for(const auto& function : functions_) {
+        const auto& abiAnalysis = abiAnalysisCache_.at(function.address);
+        prototypes.push_back(FunctionPrototype {
+            .address = function.address,
+            .name = function.name,
+            .parameterCount = abiAnalysis.parameters.size(),
+            .returnsValue = abiAnalysis.returnsValue,
+            .returnType = abiAnalysis.returnType,
+            .returnBitWidth = abiAnalysis.returnBitWidth,
+        });
+    }
+
+    const DataFlowAnalyzer dataFlowAnalyzer;
+    const PseudocodeGenerator pseudocodeGenerator;
+    for(const auto& function : functions_) {
+        const auto& instructions = instructionCache_.at(function.address);
+        const auto& controlFlowGraph = controlFlowGraphCache_.at(function.address);
+        const auto& abiAnalysis = abiAnalysisCache_.at(function.address);
+        const auto& ir = irCache_.at(function.address);
+        auto dataFlow =
+            dataFlowAnalyzer.analyze(ir, instructions, controlFlowGraph, abiAnalysis);
+        auto pseudocode = pseudocodeGenerator.generate(
+            function, abiAnalysis, controlFlowGraph, dataFlow, prototypes);
+        dataFlowCache_.emplace(function.address, std::move(dataFlow));
+        pseudocodeCache_.emplace(function.address, std::move(pseudocode));
     }
 
     valid_ = true;
@@ -104,6 +142,8 @@ void AnalysisSession::reset() noexcept {
     controlFlowGraphCache_.clear();
     abiAnalysisCache_.clear();
     irCache_.clear();
+    dataFlowCache_.clear();
+    pseudocodeCache_.clear();
     errorMessage_.clear();
     valid_ = false;
 }
@@ -172,6 +212,24 @@ const IRFunction* AnalysisSession::irFor(std::uint64_t functionAddress) const no
         return nullptr;
     }
     return &ir->second;
+}
+
+const DataFlowAnalysis*
+AnalysisSession::dataFlowFor(std::uint64_t functionAddress) const noexcept {
+    const auto analysis = dataFlowCache_.find(functionAddress);
+    if(analysis == dataFlowCache_.end()) {
+        return nullptr;
+    }
+    return &analysis->second;
+}
+
+const std::string*
+AnalysisSession::pseudocodeFor(std::uint64_t functionAddress) const noexcept {
+    const auto pseudocode = pseudocodeCache_.find(functionAddress);
+    if(pseudocode == pseudocodeCache_.end()) {
+        return nullptr;
+    }
+    return &pseudocode->second;
 }
 
 } // namespace decompiler
