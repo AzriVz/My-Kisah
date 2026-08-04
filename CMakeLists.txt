@@ -19,15 +19,28 @@ add_library(decompiler_core STATIC)
 
 target_sources(decompiler_core
     PRIVATE
+        src/AnalysisSession.cpp
+        src/Disassembler.cpp
         src/ElfLoader.cpp
+        src/FunctionDiscovery.cpp
     PUBLIC
+        include/AnalysisSession.hpp
+        include/Disassembler.hpp
         include/ElfLoader.hpp
         include/ElfTypes.hpp
+        include/FunctionInfo.hpp
+        include/FunctionDiscovery.hpp
+        include/Instruction.hpp
 )
 
 target_include_directories(decompiler_core
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+
+target_link_libraries(decompiler_core
+    PUBLIC
+        Capstone::Capstone
 )
 
 add_library(decompiler_gui STATIC)
