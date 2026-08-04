@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AbiAnalyzer.hpp"
+#include "CallGraph.hpp"
 #include "ControlFlowGraph.hpp"
 #include "DataFlowAnalyzer.hpp"
 #include "Disassembler.hpp"
@@ -39,6 +40,7 @@ public:
     dataFlowFor(std::uint64_t functionAddress) const noexcept;
     [[nodiscard]] const std::string*
     pseudocodeFor(std::uint64_t functionAddress) const noexcept;
+    [[nodiscard]] const CallGraph& callGraph() const noexcept;
 
 private:
     ElfLoader elfLoader_;
@@ -50,6 +52,7 @@ private:
     std::unordered_map<std::uint64_t, IRFunction> irCache_;
     std::unordered_map<std::uint64_t, DataFlowAnalysis> dataFlowCache_;
     std::unordered_map<std::uint64_t, std::string> pseudocodeCache_;
+    CallGraph callGraph_;
     std::string errorMessage_;
     bool valid_ = false;
 };

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
 
 class QAction;
@@ -20,6 +21,7 @@ class QTableWidget;
 namespace decompiler {
 
 class AnalysisSession;
+class CallGraphView;
 class ElfLoader;
 class PseudocodeView;
 
@@ -29,11 +31,17 @@ public:
     ~MainWindow() override;
 
     bool loadBinary(const std::filesystem::path& path);
+    bool patchInstruction(
+        std::uint64_t instructionAddress,
+        std::span<const std::uint8_t> replacementBytes,
+        const std::filesystem::path& outputPath,
+        bool allowOverwrite = false);
     [[nodiscard]] const ElfLoader& elfLoader() const noexcept;
     [[nodiscard]] const AnalysisSession& analysisSession() const noexcept;
 
 private:
     void chooseBinary();
+    void patchSelectedInstruction();
     void clearBinaryInformation();
     void clearAnalysisViews();
     void updateBinaryInformation();
@@ -69,10 +77,12 @@ private:
     QLineEdit* pseudocodeSearch_ = nullptr;
     QListWidget* functionList_ = nullptr;
     PseudocodeView* pseudocodeView_ = nullptr;
+    CallGraphView* callGraphView_ = nullptr;
     QTableWidget* assemblyTable_ = nullptr;
     QProgressBar* analysisProgress_ = nullptr;
     QAction* backAction_ = nullptr;
     QAction* forwardAction_ = nullptr;
+    QAction* patchInstructionAction_ = nullptr;
     std::vector<std::uint64_t> navigationHistory_;
     std::ptrdiff_t navigationIndex_ = -1;
     bool restoringNavigation_ = false;

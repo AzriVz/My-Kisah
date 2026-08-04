@@ -41,6 +41,7 @@ struct ElfMetadata {
     bool is64Bit = false;
     bool isLittleEndian = false;
     bool isStripped = true;
+    bool isPositionIndependent = false;
 };
 
 struct ProgramHeaderInfo {

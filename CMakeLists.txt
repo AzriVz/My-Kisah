@@ -22,6 +22,8 @@ target_sources(decompiler_core
         src/AbiAnalyzer.cpp
         src/AnalysisSession.cpp
         src/BasicBlockBuilder.cpp
+        src/BinaryPatcher.cpp
+        src/CallGraph.cpp
         src/ControlFlowGraph.cpp
         src/DataFlowAnalyzer.cpp
         src/Disassembler.cpp
@@ -35,6 +37,8 @@ target_sources(decompiler_core
         include/AnalysisSession.hpp
         include/BasicBlock.hpp
         include/BasicBlockBuilder.hpp
+        include/BinaryPatcher.hpp
+        include/CallGraph.hpp
         include/ControlFlowGraph.hpp
         include/DataFlowAnalyzer.hpp
         include/Disassembler.hpp
@@ -64,10 +68,12 @@ add_library(decompiler_gui STATIC)
 target_sources(decompiler_gui
     PRIVATE
         src/MainWindow.cpp
+        src/CallGraphView.cpp
         src/PseudocodeHighlighter.cpp
         src/PseudocodeView.cpp
     PUBLIC
         include/MainWindow.hpp
+        include/CallGraphView.hpp
         include/PseudocodeHighlighter.hpp
         include/PseudocodeView.hpp
 )

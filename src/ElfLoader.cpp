@@ -64,6 +64,32 @@ static bool contains(std::uint64_t start, std::uint64_t size, std::uint64_t valu
     return value >= start && value - start < size;
 }
 
+static bool hasPieDynamicFlag(
+    std::span<const std::uint8_t> fileBytes,
+    const std::vector<ProgramHeaderInfo>& programHeaders) noexcept {
+    for(const auto& programHeader : programHeaders) {
+        if(programHeader.type != PT_DYNAMIC
+           || programHeader.fileSize < sizeof(Elf64_Dyn)) {
+            continue;
+        }
+
+        const auto entryCount = programHeader.fileSize / sizeof(Elf64_Dyn);
+        for(std::uint64_t index = 0; index < entryCount; ++index) {
+            const auto entry = readObject<Elf64_Dyn>(
+                fileBytes,
+                programHeader.fileOffset + index * sizeof(Elf64_Dyn));
+            if(!entry || entry->d_tag == DT_NULL) {
+                break;
+            }
+            if(entry->d_tag == DT_FLAGS_1
+               && (entry->d_un.d_val & DF_1_PIE) != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool ElfLoader::load(const std::filesystem::path& path) {
     reset();
 
@@ -284,10 +310,10 @@ bool ElfLoader::parse() {
         return fail(ElfLoadError::UnsupportedMachine, "Only x86-64 ELF files are supported.");
     }
 
-    if(header->e_type != ET_EXEC) {
+    if(header->e_type != ET_EXEC && header->e_type != ET_DYN) {
         return fail(
             ElfLoadError::UnsupportedType,
-            "Only non-PIE ELF executables are supported in this version.");
+            "Only ELF executables and position-independent executables are supported.");
     }
 
     std::uint64_t sectionCount = header->e_shnum;
@@ -443,6 +469,19 @@ bool ElfLoader::parse() {
         }
     }
 
+    const bool hasInterpreter = std::any_of(
+        programHeaders_.begin(), programHeaders_.end(), [](const auto& programHeader) {
+            return programHeader.type == PT_INTERP;
+        });
+    const bool hasPositionIndependentExecutableFlag =
+        hasPieDynamicFlag(fileBytes, programHeaders_);
+    if(header->e_type == ET_DYN && !hasInterpreter
+       && !hasPositionIndependentExecutableFlag) {
+        return fail(
+            ElfLoadError::UnsupportedType,
+            "ELF shared libraries are not supported; ET_DYN input must be a PIE executable.");
+    }
+
     bool hasStaticSymbolTable = false;
     for(std::size_t sectionIndex = 0; sectionIndex < rawSections.size(); ++sectionIndex) {
         const auto& symbolSection = rawSections[sectionIndex];
@@ -510,6 +549,7 @@ bool ElfLoader::parse() {
     metadata_.is64Bit = true;
     metadata_.isLittleEndian = true;
     metadata_.isStripped = !hasStaticSymbolTable;
+    metadata_.isPositionIndependent = header->e_type == ET_DYN;
 
     error_ = ElfLoadError::None;
     errorMessage_.clear();

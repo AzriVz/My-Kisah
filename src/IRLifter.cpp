@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -49,6 +50,32 @@ static std::string hexadecimal(std::uint64_t value) {
     std::ostringstream output;
     output << "0x" << std::hex << std::nouppercase << value;
     return output.str();
+}
+
+static std::optional<std::uint64_t> ripRelativeAddress(
+    const Instruction& instruction,
+    const MemoryOperand& memory) noexcept {
+    const auto base = RegisterNormalizer::normalize(memory.baseRegister);
+    if(!base || base->id != RegisterId::Rip || !memory.indexRegister.empty()
+       || instruction.bytes.size()
+              > std::numeric_limits<std::uint64_t>::max() - instruction.address) {
+        return std::nullopt;
+    }
+
+    const auto nextAddress = instruction.address + instruction.bytes.size();
+    if(memory.displacement >= 0) {
+        const auto displacement = static_cast<std::uint64_t>(memory.displacement);
+        if(displacement > std::numeric_limits<std::uint64_t>::max() - nextAddress) {
+            return std::nullopt;
+        }
+        return nextAddress + displacement;
+    }
+
+    const auto magnitude = static_cast<std::uint64_t>(-(memory.displacement + 1)) + 1;
+    if(magnitude > nextAddress) {
+        return std::nullopt;
+    }
+    return nextAddress - magnitude;
 }
 
 static IRValue registerValue(
@@ -114,7 +141,13 @@ static IRValue immediateValue(const InstructionOperand& operand) {
 
 static std::string memoryExpression(
     const MemoryOperand& memory,
-    const AbiAnalysisResult& analysis) {
+    const AbiAnalysisResult& analysis,
+    const Instruction* instruction) {
+    if(instruction != nullptr) {
+        if(const auto address = ripRelativeAddress(*instruction, memory)) {
+            return '[' + hexadecimal(*address) + ']';
+        }
+    }
     std::vector<std::string> components;
     if(!memory.baseRegister.empty()) {
         components.push_back(registerValue(memory.baseRegister, analysis).name);
@@ -150,7 +183,8 @@ static std::string memoryExpression(
 
 static IRValue memoryValue(
     const InstructionOperand& operand,
-    const AbiAnalysisResult& analysis) {
+    const AbiAnalysisResult& analysis,
+    const Instruction* instruction) {
     const auto base = RegisterNormalizer::normalize(operand.memory.baseRegister);
     if(base && base->id == RegisterId::Rbp) {
         if(const auto* variable =
@@ -181,29 +215,33 @@ static IRValue memoryValue(
         }
     }
 
+    const auto address = instruction == nullptr
+                             ? std::optional<std::uint64_t> {}
+                             : ripRelativeAddress(*instruction, operand.memory);
     return IRValue {
         .kind = IRValueKind::Memory,
-        .name = memoryExpression(operand.memory, analysis),
+        .name = memoryExpression(operand.memory, analysis, instruction),
         .type = ValueType::Integer,
         .bitWidth = static_cast<std::uint16_t>(operand.size * 8),
         .registerId = std::nullopt,
         .constant = std::nullopt,
         .stackOffset = std::nullopt,
-        .address = std::nullopt,
+        .address = address,
     };
 }
 
 static IRValue operandValue(
     const InstructionOperand& operand,
     const AbiAnalysisResult& analysis,
-    bool destination = false) {
+    bool destination = false,
+    const Instruction* instruction = nullptr) {
     switch(operand.kind) {
     case OperandKind::Register:
         return registerValue(operand.registerName, analysis, destination);
     case OperandKind::Immediate:
         return immediateValue(operand);
     case OperandKind::Memory:
-        return memoryValue(operand, analysis);
+        return memoryValue(operand, analysis, instruction);
     case OperandKind::Invalid:
         return {};
     }
@@ -262,10 +300,10 @@ static IRInstruction binaryInstruction(
 
     return IRInstruction {
         .opcode = opcode,
-        .destination = operandValue(instruction.operands[0], analysis, true),
+        .destination = operandValue(instruction.operands[0], analysis, true, &instruction),
         .operands = {
-            operandValue(instruction.operands[0], analysis),
-            operandValue(instruction.operands[1], analysis),
+            operandValue(instruction.operands[0], analysis, false, &instruction),
+            operandValue(instruction.operands[1], analysis, false, &instruction),
         },
         .sourceAddress = instruction.address,
         .comment = {},
@@ -290,8 +328,8 @@ static IRInstruction liftMove(
 
     return IRInstruction {
         .opcode = opcode,
-        .destination = operandValue(destinationOperand, analysis, true),
-        .operands = {operandValue(sourceOperand, analysis)},
+        .destination = operandValue(destinationOperand, analysis, true, &instruction),
+        .operands = {operandValue(sourceOperand, analysis, false, &instruction)},
         .sourceAddress = instruction.address,
         .comment = {},
     };
@@ -306,6 +344,18 @@ static IRInstruction liftLea(
     }
 
     const auto& memory = instruction.operands[1].memory;
+    if(const auto address = ripRelativeAddress(instruction, memory)) {
+        auto destination =
+            operandValue(instruction.operands[0], analysis, true, &instruction);
+        destination.type = ValueType::Pointer;
+        return IRInstruction {
+            .opcode = IROpcode::Assign,
+            .destination = std::move(destination),
+            .operands = {targetValue(*address, IRValueKind::Immediate)},
+            .sourceAddress = instruction.address,
+            .comment = {},
+        };
+    }
     std::vector<IRValue> components;
     bool pointerResult = false;
     if(!memory.baseRegister.empty()) {
@@ -333,10 +383,10 @@ static IRInstruction liftLea(
         components.push_back(immediateValue(displacement));
     }
     if(components.empty()) {
-        components.push_back(memoryValue(instruction.operands[1], analysis));
+        components.push_back(memoryValue(instruction.operands[1], analysis, &instruction));
     }
 
-    auto destination = operandValue(instruction.operands[0], analysis, true);
+    auto destination = operandValue(instruction.operands[0], analysis, true, &instruction);
     destination.type = pointerResult ? ValueType::Pointer : ValueType::Integer;
     return IRInstruction {
         .opcode = components.size() > 1 ? IROpcode::Add : IROpcode::Assign,
@@ -361,19 +411,19 @@ static IRInstruction liftMultiply(
         lifted.destination = returnRegisterValue(analysis);
         lifted.operands = {
             returnRegisterValue(analysis),
-            operandValue(instruction.operands[0], analysis),
+            operandValue(instruction.operands[0], analysis, false, &instruction),
         };
     } else if(instruction.operands.size() == 2) {
-        lifted.destination = operandValue(instruction.operands[0], analysis, true);
+        lifted.destination = operandValue(instruction.operands[0], analysis, true, &instruction);
         lifted.operands = {
-            operandValue(instruction.operands[0], analysis),
-            operandValue(instruction.operands[1], analysis),
+            operandValue(instruction.operands[0], analysis, false, &instruction),
+            operandValue(instruction.operands[1], analysis, false, &instruction),
         };
     } else {
-        lifted.destination = operandValue(instruction.operands[0], analysis, true);
+        lifted.destination = operandValue(instruction.operands[0], analysis, true, &instruction);
         lifted.operands = {
-            operandValue(instruction.operands[1], analysis),
-            operandValue(instruction.operands[2], analysis),
+            operandValue(instruction.operands[1], analysis, false, &instruction),
+            operandValue(instruction.operands[2], analysis, false, &instruction),
         };
     }
     return lifted;
@@ -395,7 +445,8 @@ static IRInstruction liftInstruction(
             lifted.operands.push_back(
                 targetValue(*instruction.directTarget, IRValueKind::Function));
         } else if(!instruction.operands.empty()) {
-            lifted.operands.push_back(operandValue(instruction.operands[0], analysis));
+            lifted.operands.push_back(
+                operandValue(instruction.operands[0], analysis, false, &instruction));
         }
         return lifted;
     }
@@ -430,7 +481,8 @@ static IRInstruction liftInstruction(
             lifted.operands.push_back(
                 targetValue(*instruction.directTarget, IRValueKind::Immediate));
         } else if(!instruction.operands.empty()) {
-            lifted.operands.push_back(operandValue(instruction.operands[0], analysis));
+            lifted.operands.push_back(
+                operandValue(instruction.operands[0], analysis, false, &instruction));
         }
         return lifted;
     }
@@ -455,7 +507,8 @@ static IRInstruction liftInstruction(
         lifted.destination = returnRegisterValue(analysis);
         lifted.operands = {returnRegisterValue(analysis)};
         if(!instruction.operands.empty()) {
-            lifted.operands.push_back(operandValue(instruction.operands[0], analysis));
+            lifted.operands.push_back(
+                operandValue(instruction.operands[0], analysis, false, &instruction));
         }
         lifted.sourceAddress = instruction.address;
         return lifted;
@@ -478,7 +531,7 @@ static IRInstruction liftInstruction(
         lifted.opcode = IROpcode::Compare;
         lifted.sourceAddress = instruction.address;
         for(const auto& operand : instruction.operands) {
-            lifted.operands.push_back(operandValue(operand, analysis));
+            lifted.operands.push_back(operandValue(operand, analysis, false, &instruction));
         }
         return lifted;
     }
@@ -490,8 +543,10 @@ static IRInstruction liftInstruction(
         }
         return IRInstruction {
             .opcode = IROpcode::Cast,
-            .destination = operandValue(instruction.operands[0], analysis, true),
-            .operands = {operandValue(instruction.operands[1], analysis)},
+            .destination = operandValue(
+                instruction.operands[0], analysis, true, &instruction),
+            .operands = {operandValue(
+                instruction.operands[1], analysis, false, &instruction)},
             .sourceAddress = instruction.address,
             .comment = {},
         };
@@ -520,7 +575,8 @@ static IRInstruction liftInstruction(
         lifted.destination = std::move(stackMemory);
         lifted.sourceAddress = instruction.address;
         if(!instruction.operands.empty()) {
-            lifted.operands.push_back(operandValue(instruction.operands[0], analysis));
+            lifted.operands.push_back(
+                operandValue(instruction.operands[0], analysis, false, &instruction));
         }
         return lifted;
     }
@@ -529,7 +585,8 @@ static IRInstruction liftInstruction(
         lifted.opcode = IROpcode::Load;
         lifted.sourceAddress = instruction.address;
         if(!instruction.operands.empty()) {
-            lifted.destination = operandValue(instruction.operands[0], analysis, true);
+            lifted.destination =
+                operandValue(instruction.operands[0], analysis, true, &instruction);
         }
         lifted.operands.push_back(IRValue {
             .kind = IRValueKind::Memory,

@@ -1,6 +1,8 @@
 #include "MainWindow.hpp"
 
 #include "AnalysisSession.hpp"
+#include "BinaryPatcher.hpp"
+#include "CallGraphView.hpp"
 #include "ElfLoader.hpp"
 #include "FunctionInfo.hpp"
 #include "Instruction.hpp"
@@ -14,8 +16,11 @@
 #include <QBrush>
 #include <QColor>
 #include <QEventLoop>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFontDatabase>
+#include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
@@ -33,6 +38,7 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTabWidget>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QToolBar>
@@ -146,6 +152,17 @@ MainWindow::MainWindow(QWidget* parent)
         pseudocodeSearch_->selectAll();
     });
 
+    auto* patchMenu = menuBar()->addMenu(tr("&Patch"));
+    patchInstructionAction_ = patchMenu->addAction(tr("Patch Selected &Instruction..."));
+    patchInstructionAction_->setObjectName(QStringLiteral("patchInstructionAction"));
+    patchInstructionAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+P")));
+    patchInstructionAction_->setEnabled(false);
+    connect(
+        patchInstructionAction_,
+        &QAction::triggered,
+        this,
+        &MainWindow::patchSelectedInstruction);
+
     auto* navigationToolBar = addToolBar(tr("Navigation"));
     navigationToolBar->setObjectName(QStringLiteral("navigationToolBar"));
     navigationToolBar->setMovable(false);
@@ -153,6 +170,8 @@ MainWindow::MainWindow(QWidget* parent)
     navigationToolBar->addSeparator();
     navigationToolBar->addAction(backAction_);
     navigationToolBar->addAction(forwardAction_);
+    navigationToolBar->addSeparator();
+    navigationToolBar->addAction(patchInstructionAction_);
 
     auto* centralWidget = new QWidget(this);
     auto* pageLayout = new QVBoxLayout(centralWidget);
@@ -233,7 +252,10 @@ MainWindow::MainWindow(QWidget* parent)
     auto* detailSplitter = new QSplitter(Qt::Vertical, analysisSplitter);
     detailSplitter->setObjectName(QStringLiteral("detailSplitter"));
 
-    auto* pseudocodeGroup = new QGroupBox(tr("Reconstructed Pseudocode"), detailSplitter);
+    auto* analysisTabs = new QTabWidget(detailSplitter);
+    analysisTabs->setObjectName(QStringLiteral("analysisTabs"));
+
+    auto* pseudocodeGroup = new QGroupBox(tr("Reconstructed Pseudocode"), analysisTabs);
     auto* pseudocodeLayout = new QVBoxLayout(pseudocodeGroup);
     auto* pseudocodeSearchLayout = new QHBoxLayout;
     pseudocodeSearch_ = new QLineEdit(pseudocodeGroup);
@@ -260,6 +282,34 @@ MainWindow::MainWindow(QWidget* parent)
     new PseudocodeHighlighter(pseudocodeView_->document());
     pseudocodeLayout->addWidget(pseudocodeView_);
 
+    auto* callGraphGroup = new QGroupBox(tr("Function Call Graph"), analysisTabs);
+    auto* callGraphLayout = new QVBoxLayout(callGraphGroup);
+    auto* callGraphControls = new QHBoxLayout;
+    auto* zoomOutButton = new QToolButton(callGraphGroup);
+    zoomOutButton->setObjectName(QStringLiteral("callGraphZoomOutButton"));
+    zoomOutButton->setText(QStringLiteral("−"));
+    zoomOutButton->setToolTip(tr("Zoom out"));
+    auto* resetZoomButton = new QToolButton(callGraphGroup);
+    resetZoomButton->setObjectName(QStringLiteral("callGraphResetZoomButton"));
+    resetZoomButton->setText(tr("Reset"));
+    resetZoomButton->setToolTip(tr("Reset zoom"));
+    auto* zoomInButton = new QToolButton(callGraphGroup);
+    zoomInButton->setObjectName(QStringLiteral("callGraphZoomInButton"));
+    zoomInButton->setText(QStringLiteral("+"));
+    zoomInButton->setToolTip(tr("Zoom in"));
+    callGraphControls->addStretch();
+    callGraphControls->addWidget(zoomOutButton);
+    callGraphControls->addWidget(resetZoomButton);
+    callGraphControls->addWidget(zoomInButton);
+    callGraphLayout->addLayout(callGraphControls);
+
+    callGraphView_ = new CallGraphView(callGraphGroup);
+    callGraphView_->setObjectName(QStringLiteral("callGraphView"));
+    callGraphLayout->addWidget(callGraphView_);
+
+    analysisTabs->addTab(pseudocodeGroup, tr("Pseudocode"));
+    analysisTabs->addTab(callGraphGroup, tr("Call Graph"));
+
     auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), detailSplitter);
     auto* assemblyLayout = new QVBoxLayout(assemblyGroup);
     assemblyTable_ = new QTableWidget(assemblyGroup);
@@ -279,7 +329,7 @@ MainWindow::MainWindow(QWidget* parent)
     assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     assemblyLayout->addWidget(assemblyTable_);
 
-    detailSplitter->addWidget(pseudocodeGroup);
+    detailSplitter->addWidget(analysisTabs);
     detailSplitter->addWidget(assemblyGroup);
     detailSplitter->setStretchFactor(0, 1);
     detailSplitter->setStretchFactor(1, 1);
@@ -308,6 +358,14 @@ MainWindow::MainWindow(QWidget* parent)
         &QTableWidget::cellDoubleClicked,
         this,
         [this](int row, int) { navigateFromAssembly(row); });
+    connect(
+        assemblyTable_,
+        &QTableWidget::currentCellChanged,
+        this,
+        [this](int currentRow, int, int, int) {
+            patchInstructionAction_->setEnabled(
+                analysisSession_->isValid() && currentRow >= 0);
+        });
     connect(pseudocodeSearch_, &QLineEdit::returnPressed, this, [this] {
         findPseudocodeText(false);
     });
@@ -327,6 +385,11 @@ MainWindow::MainWindow(QWidget* parent)
     });
     pseudocodeView_->setCallActivationHandler(
         [this](std::uint64_t address) { navigateFromPseudocode(address); });
+    callGraphView_->setNodeActivationHandler(
+        [this](std::uint64_t address) { selectFunction(address); });
+    connect(zoomOutButton, &QToolButton::clicked, callGraphView_, &CallGraphView::zoomOut);
+    connect(resetZoomButton, &QToolButton::clicked, callGraphView_, &CallGraphView::resetZoom);
+    connect(zoomInButton, &QToolButton::clicked, callGraphView_, &CallGraphView::zoomIn);
 
     analysisProgress_ = new QProgressBar(this);
     analysisProgress_->setObjectName(QStringLiteral("analysisProgress"));
@@ -369,6 +432,7 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
     updateBinaryInformation();
     populateFunctionList();
     updatePseudocodeCallTargets();
+    callGraphView_->setGraph(analysisSession_->callGraph());
 
     const auto& metadata = analysisSession_->elfLoader().metadata();
     const auto fileName = QString::fromStdString(metadata.fileName);
@@ -399,6 +463,60 @@ const AnalysisSession& MainWindow::analysisSession() const noexcept {
     return *analysisSession_;
 }
 
+bool MainWindow::patchInstruction(
+    std::uint64_t instructionAddress,
+    std::span<const std::uint8_t> replacementBytes,
+    const std::filesystem::path& outputPath,
+    bool allowOverwrite) {
+    if(!analysisSession_->isValid()) {
+        statusBar()->showMessage(tr("Open and analyze a binary before patching."));
+        return false;
+    }
+
+    const Instruction* selectedInstruction = nullptr;
+    for(const auto& function : analysisSession_->functions()) {
+        const auto* instructions = analysisSession_->instructionsFor(function.address);
+        if(instructions == nullptr) {
+            continue;
+        }
+        const auto instruction = std::find_if(
+            instructions->begin(), instructions->end(), [instructionAddress](const auto& value) {
+                return value.address == instructionAddress;
+            });
+        if(instruction != instructions->end()) {
+            selectedInstruction = &*instruction;
+            break;
+        }
+    }
+
+    if(selectedInstruction == nullptr) {
+        statusBar()->showMessage(tr("The selected instruction is not part of the analysis."));
+        return false;
+    }
+
+    const BinaryPatcher patcher;
+    const auto result = patcher.patchInstruction(
+        analysisSession_->elfLoader(),
+        selectedInstruction->address,
+        selectedInstruction->bytes,
+        replacementBytes,
+        outputPath,
+        allowOverwrite);
+    if(!result.succeeded()) {
+        statusBar()->showMessage(
+            tr("Patch rejected: %1").arg(QString::fromStdString(result.errorMessage)));
+        return false;
+    }
+
+    if(!loadBinary(result.outputPath)) {
+        return false;
+    }
+    statusBar()->showMessage(
+        tr("Patched binary saved and re-analyzed: %1")
+            .arg(QString::fromStdString(result.outputPath.string())));
+    return true;
+}
+
 void MainWindow::chooseBinary() {
     const auto fileName = QFileDialog::getOpenFileName(
         this,
@@ -414,6 +532,119 @@ void MainWindow::chooseBinary() {
             this,
             tr("Unable to Open Binary"),
             QString::fromStdString(std::string(analysisSession_->errorMessage())));
+    }
+}
+
+void MainWindow::patchSelectedInstruction() {
+    const auto row = assemblyTable_->currentRow();
+    const auto* addressItem = row >= 0 ? assemblyTable_->item(row, 0) : nullptr;
+    if(addressItem == nullptr) {
+        QMessageBox::information(this, tr("Patch Instruction"), tr("Select an instruction first."));
+        return;
+    }
+
+    const auto address = addressItem->data(addressRole).toULongLong();
+    const Instruction* selectedInstruction = nullptr;
+    for(const auto& function : analysisSession_->functions()) {
+        const auto* instructions = analysisSession_->instructionsFor(function.address);
+        if(instructions == nullptr) {
+            continue;
+        }
+        const auto instruction = std::find_if(
+            instructions->begin(), instructions->end(), [address](const auto& value) {
+                return value.address == address;
+            });
+        if(instruction != instructions->end()) {
+            selectedInstruction = &*instruction;
+            break;
+        }
+    }
+    if(selectedInstruction == nullptr) {
+        QMessageBox::critical(
+            this, tr("Patch Instruction"), tr("Cached instruction bytes are unavailable."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Patch Instruction"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    form->addRow(tr("Address:"), new QLabel(hexadecimal(address), &dialog));
+    form->addRow(
+        tr("Original bytes:"),
+        new QLabel(byteString(selectedInstruction->bytes), &dialog));
+    auto* replacementInput = new QLineEdit(byteString(selectedInstruction->bytes), &dialog);
+    replacementInput->setObjectName(QStringLiteral("patchBytesInput"));
+    replacementInput->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    form->addRow(tr("Replacement hex:"), replacementInput);
+    layout->addLayout(form);
+
+    auto* nopButton = new QToolButton(&dialog);
+    nopButton->setObjectName(QStringLiteral("fillNopButton"));
+    nopButton->setText(tr("Fill with NOP"));
+    layout->addWidget(nopButton);
+    connect(nopButton, &QToolButton::clicked, &dialog, [replacementInput, selectedInstruction] {
+        replacementInput->setText(byteString(BinaryPatcher::nopBytes(selectedInstruction->bytes.size())));
+    });
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if(dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const auto parsed = BinaryPatcher::parseHexBytes(replacementInput->text().toStdString());
+    if(!parsed.succeeded()) {
+        QMessageBox::critical(
+            this,
+            tr("Invalid Patch"),
+            QString::fromStdString(parsed.errorMessage));
+        return;
+    }
+    if(parsed.bytes.size() != selectedInstruction->bytes.size()) {
+        QMessageBox::critical(
+            this,
+            tr("Invalid Patch"),
+            tr("Replacement must contain exactly %1 bytes.")
+                .arg(static_cast<qulonglong>(selectedInstruction->bytes.size())));
+        return;
+    }
+
+    const auto& sourcePath = analysisSession_->elfLoader().metadata().filePath;
+    const auto suggestedPath =
+        sourcePath.parent_path()
+        / (sourcePath.stem().string() + "-patched" + sourcePath.extension().string());
+    const auto selectedPath = QFileDialog::getSaveFileName(
+        this,
+        tr("Save Patched Binary"),
+        QString::fromStdString(suggestedPath.string()),
+        tr("ELF binaries (*)"));
+    if(selectedPath.isEmpty()) {
+        return;
+    }
+
+    const auto outputPath = std::filesystem::path(selectedPath.toStdString());
+    std::error_code filesystemError;
+    const bool outputExists = std::filesystem::exists(outputPath, filesystemError);
+    bool allowOverwrite = false;
+    if(!filesystemError && outputExists) {
+        allowOverwrite = QMessageBox::question(
+                             this,
+                             tr("Confirm Overwrite"),
+                             tr("The selected file already exists. Overwrite it?"),
+                             QMessageBox::Yes | QMessageBox::No,
+                             QMessageBox::No)
+                         == QMessageBox::Yes;
+        if(!allowOverwrite) {
+            return;
+        }
+    }
+
+    if(!patchInstruction(address, parsed.bytes, outputPath, allowOverwrite)) {
+        QMessageBox::critical(this, tr("Patch Failed"), statusBar()->currentMessage());
     }
 }
 
@@ -446,8 +677,10 @@ void MainWindow::clearAnalysisViews() {
     functionList_->clear();
     pseudocodeView_->setCallTargets({});
     pseudocodeView_->clear();
+    callGraphView_->clearGraph();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
+    patchInstructionAction_->setEnabled(false);
 }
 
 void MainWindow::updateBinaryInformation() {
@@ -459,7 +692,10 @@ void MainWindow::updateBinaryInformation() {
     filePathValue_->setText(QString::fromStdString(metadata.filePath.string()));
     fileSizeValue_->setText(
         tr("%1 bytes").arg(static_cast<qulonglong>(metadata.fileSize)));
-    classValue_->setText(metadata.is64Bit ? tr("ELF64") : tr("Unsupported"));
+    classValue_->setText(
+        metadata.is64Bit
+            ? (metadata.isPositionIndependent ? tr("ELF64 PIE") : tr("ELF64"))
+            : tr("Unsupported"));
     architectureValue_->setText(tr("x86-64"));
     endiannessValue_->setText(
         metadata.isLittleEndian ? tr("Little endian") : tr("Unsupported"));
@@ -539,6 +775,7 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
     }
 
     recordNavigation(functionAddress);
+    callGraphView_->setActiveFunction(functionAddress);
     pseudocodeView_->setPlainText(QString::fromStdString(*pseudocode));
     if(!pseudocodeSearch_->text().isEmpty()) {
         auto cursor = pseudocodeView_->textCursor();

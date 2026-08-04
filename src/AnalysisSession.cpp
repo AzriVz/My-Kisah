@@ -102,6 +102,14 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
         instructionCache_.emplace(function.address, std::move(result.instructions));
     }
 
+    if(!callGraph_.build(functions_, instructionCache_)) {
+        auto callGraphError = std::string(callGraph_.errorMessage());
+        reset();
+        errorMessage_ = callGraphError.empty() ? "Call graph construction failed."
+                                               : std::move(callGraphError);
+        return false;
+    }
+
     std::vector<FunctionPrototype> prototypes;
     prototypes.reserve(functions_.size());
     for(const auto& function : functions_) {
@@ -144,6 +152,7 @@ void AnalysisSession::reset() noexcept {
     irCache_.clear();
     dataFlowCache_.clear();
     pseudocodeCache_.clear();
+    callGraph_.clear();
     errorMessage_.clear();
     valid_ = false;
 }
@@ -230,6 +239,10 @@ AnalysisSession::pseudocodeFor(std::uint64_t functionAddress) const noexcept {
         return nullptr;
     }
     return &pseudocode->second;
+}
+
+const CallGraph& AnalysisSession::callGraph() const noexcept {
+    return callGraph_;
 }
 
 } // namespace decompiler
