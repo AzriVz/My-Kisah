@@ -17,6 +17,8 @@ class QListWidget;
 class QListWidgetItem;
 class QProgressBar;
 class QString;
+class QTreeWidget;
+class QTreeWidgetItem;
 namespace decompiler {
 
 class AnalysisSession;
@@ -47,8 +49,12 @@ private:
     void clearAnalysisViews();
     void updateBinaryInformation();
     void populateFunctionList();
+    void populateSymbolTree();
     void populateAssemblyListing();
     void focusAssemblyFunction(std::uint64_t address);
+    void focusAssemblyAddress(std::uint64_t address);
+    void activateSymbolItem(QTreeWidgetItem* item);
+    void syncSymbolTreeFunction(std::uint64_t address);
     void filterFunctions(const QString& query);
     void displayFunction(QListWidgetItem* item);
     void navigateFromAssembly(int row);
@@ -79,6 +85,7 @@ private:
     QLineEdit* functionSearch_ = nullptr;
     QLineEdit* pseudocodeSearch_ = nullptr;
     QListWidget* functionList_ = nullptr;
+    QTreeWidget* symbolTree_ = nullptr;
     PseudocodeView* pseudocodeView_ = nullptr;
     CallGraphPanel* callGraphPanel_ = nullptr;
     CallGraphView* callGraphView_ = nullptr;
@@ -87,6 +94,7 @@ private:
     QAction* backAction_ = nullptr;
     QAction* forwardAction_ = nullptr;
     QAction* patchInstructionAction_ = nullptr;
+    std::unordered_map<std::uint64_t, QTreeWidgetItem*> symbolTreeFunctionItems_;
     std::unordered_map<std::uint64_t, int> assemblyFunctionRows_;
     std::unordered_map<std::uint64_t, std::size_t> assemblyFunctionInstructionCounts_;
     std::vector<std::uint64_t> navigationHistory_;

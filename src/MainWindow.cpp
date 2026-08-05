@@ -12,6 +12,8 @@
 #include "PseudocodeHighlighter.hpp"
 #include "PseudocodeView.hpp"
 
+#include <elf.h>
+
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
@@ -35,8 +37,10 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStyle>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -45,11 +49,14 @@
 #include <QTextDocument>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -58,6 +65,17 @@ static constexpr int directTargetRole = Qt::UserRole + 2;
 static constexpr int instructionKindRole = Qt::UserRole + 3;
 static constexpr int functionNameRole = Qt::UserRole + 4;
 static constexpr int assemblyFunctionAddressRole = Qt::UserRole + 5;
+static constexpr int symbolItemKindRole = Qt::UserRole + 6;
+static constexpr int symbolCategoryRole = Qt::UserRole + 7;
+
+enum class SymbolTreeItemKind {
+    Category,
+    Function,
+    CodeSymbol,
+    DataSymbol,
+    Import,
+    Section,
+};
 
 static QLabel* createValueLabel(QWidget* parent, const char* objectName) {
     auto* label = new QLabel(parent);
@@ -237,13 +255,14 @@ MainWindow::MainWindow(QWidget* parent)
     analysisSplitter->setChildrenCollapsible(false);
 
     auto* functionPanel = new QWidget(analysisSplitter);
+    functionPanel->setObjectName(QStringLiteral("symbolTreePanel"));
     auto* functionLayout = new QVBoxLayout(functionPanel);
     functionLayout->setContentsMargins(0, 0, 0, 0);
-    functionLayout->addWidget(new QLabel(tr("Functions"), functionPanel));
+    functionLayout->addWidget(new QLabel(tr("Symbol Tree"), functionPanel));
 
     functionSearch_ = new QLineEdit(functionPanel);
     functionSearch_->setObjectName(QStringLiteral("functionSearch"));
-    functionSearch_->setPlaceholderText(tr("Search name or address..."));
+    functionSearch_->setPlaceholderText(tr("Search symbols or addresses..."));
     functionSearch_->setClearButtonEnabled(true);
     functionLayout->addWidget(functionSearch_);
 
@@ -251,7 +270,19 @@ MainWindow::MainWindow(QWidget* parent)
     functionList_->setObjectName(QStringLiteral("functionList"));
     functionList_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     functionList_->setSelectionMode(QAbstractItemView::SingleSelection);
-    functionLayout->addWidget(functionList_, 1);
+    functionList_->hide();
+
+    symbolTree_ = new QTreeWidget(functionPanel);
+    symbolTree_->setObjectName(QStringLiteral("symbolTree"));
+    symbolTree_->setHeaderHidden(true);
+    symbolTree_->setRootIsDecorated(true);
+    symbolTree_->setAnimated(false);
+    symbolTree_->setUniformRowHeights(true);
+    symbolTree_->setSelectionMode(QAbstractItemView::SingleSelection);
+    symbolTree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    symbolTree_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    symbolTree_->setContextMenuPolicy(Qt::DefaultContextMenu);
+    functionLayout->addWidget(symbolTree_, 1);
 
     auto* analysisTabs = new QTabWidget(analysisSplitter);
     analysisTabs->setObjectName(QStringLiteral("analysisTabs"));
@@ -330,7 +361,17 @@ MainWindow::MainWindow(QWidget* parent)
         functionList_,
         &QListWidget::currentItemChanged,
         this,
-        [this](QListWidgetItem* current, QListWidgetItem*) { displayFunction(current); });
+        [this](QListWidgetItem* current, QListWidgetItem*) {
+            displayFunction(current);
+            if(current != nullptr) {
+                syncSymbolTreeFunction(current->data(addressRole).toULongLong());
+            }
+        });
+    connect(
+        symbolTree_,
+        &QTreeWidget::itemClicked,
+        this,
+        [this](QTreeWidgetItem* item, int) { activateSymbolItem(item); });
     connect(
         assemblyTable_,
         &QTableWidget::cellDoubleClicked,
@@ -426,6 +467,7 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
 
     updateBinaryInformation();
     populateFunctionList();
+    populateSymbolTree();
     populateAssemblyListing();
     updatePseudocodeCallTargets();
     callGraphPanel_->setGraph(analysisSession_->callGraph());
@@ -671,6 +713,8 @@ void MainWindow::clearAnalysisViews() {
     functionSearch_->clear();
     pseudocodeSearch_->clear();
     functionList_->clear();
+    symbolTree_->clear();
+    symbolTreeFunctionItems_.clear();
     pseudocodeView_->setCallTargets({});
     pseudocodeView_->clear();
     callGraphPanel_->clearGraph();
@@ -732,6 +776,199 @@ void MainWindow::populateFunctionList() {
     }
 
     functionList_->setUpdatesEnabled(true);
+}
+
+void MainWindow::populateSymbolTree() {
+    symbolTree_->setUpdatesEnabled(false);
+    symbolTree_->clear();
+    symbolTreeFunctionItems_.clear();
+
+    const auto folderIcon = style()->standardIcon(QStyle::SP_DirClosedIcon);
+    const auto functionIcon = style()->standardIcon(QStyle::SP_ArrowRight);
+    const auto importIcon = style()->standardIcon(QStyle::SP_ArrowDown);
+    const auto exportIcon = style()->standardIcon(QStyle::SP_ArrowUp);
+    const auto symbolIcon = style()->standardIcon(QStyle::SP_FileIcon);
+
+    const auto addCategory = [this, &folderIcon](const QString& name, const char* key) {
+        auto* item = new QTreeWidgetItem(symbolTree_, QStringList {name});
+        item->setIcon(0, folderIcon);
+        item->setData(
+            0,
+            symbolItemKindRole,
+            static_cast<int>(SymbolTreeItemKind::Category));
+        item->setData(0, symbolCategoryRole, QString::fromLatin1(key));
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+        return item;
+    };
+    const auto addSymbol = [](
+                               QTreeWidgetItem* parent,
+                               const QIcon& icon,
+                               const QString& name,
+                               std::uint64_t address,
+                               SymbolTreeItemKind kind,
+                               const QString& toolTip) {
+        const auto text = address == 0
+                              ? name
+                              : QStringLiteral("%1  %2").arg(name, hexadecimal(address));
+        auto* item = new QTreeWidgetItem(parent, QStringList {text});
+        item->setIcon(0, icon);
+        item->setData(0, symbolItemKindRole, static_cast<int>(kind));
+        item->setData(0, functionNameRole, name);
+        if(address != 0) {
+            item->setData(0, addressRole, static_cast<qulonglong>(address));
+        }
+        item->setToolTip(0, toolTip);
+        return item;
+    };
+    const auto symbolTypeName = [](std::uint8_t type) {
+        switch(type) {
+        case STT_NOTYPE:
+            return QStringLiteral("label");
+        case STT_OBJECT:
+            return QStringLiteral("object");
+        case STT_FUNC:
+            return QStringLiteral("function");
+        case STT_SECTION:
+            return QStringLiteral("section");
+        case STT_FILE:
+            return QStringLiteral("file");
+        case STT_TLS:
+            return QStringLiteral("TLS object");
+        default:
+            return QStringLiteral("symbol");
+        }
+    };
+
+    auto* importsCategory = addCategory(tr("Imports"), "imports");
+    auto* exportsCategory = addCategory(tr("Exports"), "exports");
+    auto* functionsCategory = addCategory(tr("Functions"), "functions");
+    auto* labelsCategory = addCategory(tr("Labels"), "labels");
+    auto* dataCategory = addCategory(tr("Data"), "data");
+    auto* sectionsCategory = addCategory(tr("Sections"), "sections");
+    auto* classesCategory = addCategory(tr("Classes"), "classes");
+    auto* namespacesCategory = addCategory(tr("Namespaces"), "namespaces");
+
+    for(const auto& function : analysisSession_->functions()) {
+        const auto name = QString::fromStdString(function.name);
+        auto* item = addSymbol(
+            functionsCategory,
+            functionIcon,
+            name,
+            function.address,
+            SymbolTreeItemKind::Function,
+            tr("Function at %1\nSource: %2%3")
+                .arg(hexadecimal(function.address))
+                .arg(sourceDescription(function.source))
+                .arg(function.sizeIsEstimated ? tr("\nSize is estimated") : QString {}));
+        symbolTreeFunctionItems_.insert_or_assign(function.address, item);
+    }
+
+    std::set<std::pair<std::string, std::uint64_t>> importedSymbols;
+    std::set<std::pair<std::string, std::uint64_t>> exportedSymbols;
+    std::set<std::pair<std::string, std::uint64_t>> labels;
+    std::set<std::pair<std::string, std::uint64_t>> dataSymbols;
+    for(const auto& symbol : analysisSession_->elfLoader().symbols()) {
+        if(symbol.name.empty()) {
+            continue;
+        }
+        const auto name = QString::fromStdString(symbol.name);
+        const auto toolTip = tr("%1 symbol%2\nSize: %3 bytes\nTable: %4")
+                                 .arg(symbolTypeName(symbol.type))
+                                 .arg(symbol.address == 0
+                                          ? QString {}
+                                          : tr(" at %1").arg(hexadecimal(symbol.address)))
+                                 .arg(static_cast<qulonglong>(symbol.size))
+                                 .arg(symbol.fromDynamicTable
+                                          ? tr("dynamic")
+                                          : tr("static"));
+        const auto key = std::pair {symbol.name, symbol.address};
+        if(symbol.sectionIndex == SHN_UNDEF) {
+            if(importedSymbols.insert(key).second) {
+                addSymbol(
+                    importsCategory,
+                    importIcon,
+                    name,
+                    0,
+                    SymbolTreeItemKind::Import,
+                    toolTip);
+            }
+            continue;
+        }
+
+        if((symbol.binding == STB_GLOBAL || symbol.binding == STB_WEAK)
+           && exportedSymbols.insert(key).second) {
+            addSymbol(
+                exportsCategory,
+                exportIcon,
+                name,
+                symbol.address,
+                symbol.type == STT_FUNC ? SymbolTreeItemKind::CodeSymbol
+                                        : SymbolTreeItemKind::DataSymbol,
+                toolTip);
+        }
+        if(symbol.type == STT_NOTYPE && symbol.address != 0
+           && labels.insert(key).second) {
+            addSymbol(
+                labelsCategory,
+                symbolIcon,
+                name,
+                symbol.address,
+                SymbolTreeItemKind::CodeSymbol,
+                toolTip);
+        } else if((symbol.type == STT_OBJECT || symbol.type == STT_TLS)
+                  && symbol.address != 0 && dataSymbols.insert(key).second) {
+            addSymbol(
+                dataCategory,
+                symbolIcon,
+                name,
+                symbol.address,
+                SymbolTreeItemKind::DataSymbol,
+                toolTip);
+        }
+    }
+
+    for(const auto& section : analysisSession_->elfLoader().sections()) {
+        if(section.name.empty()) {
+            continue;
+        }
+        addSymbol(
+            sectionsCategory,
+            symbolIcon,
+            QString::fromStdString(section.name),
+            section.address,
+            SymbolTreeItemKind::Section,
+            tr("Section %1\nAddress: %2\nSize: %3 bytes")
+                .arg(QString::fromStdString(section.name))
+                .arg(hexadecimal(section.address))
+                .arg(static_cast<qulonglong>(section.size)));
+    }
+
+    const auto setCategorySummary = [this](QTreeWidgetItem* category) {
+        category->setToolTip(
+            0,
+            tr("%1 item(s)").arg(category->childCount()));
+    };
+    for(auto* category : {
+            importsCategory,
+            exportsCategory,
+            functionsCategory,
+            labelsCategory,
+            dataCategory,
+            sectionsCategory,
+            classesCategory,
+            namespacesCategory,
+        }) {
+        setCategorySummary(category);
+    }
+    classesCategory->setToolTip(
+        0,
+        tr("Class information is unavailable without C++ type metadata."));
+    namespacesCategory->setToolTip(
+        0,
+        tr("Namespace information is unavailable without demangled C++ symbols."));
+
+    functionsCategory->setExpanded(true);
+    symbolTree_->setUpdatesEnabled(true);
 }
 
 void MainWindow::populateAssemblyListing() {
@@ -893,6 +1130,83 @@ void MainWindow::focusAssemblyFunction(std::uint64_t address) {
     }
 }
 
+void MainWindow::focusAssemblyAddress(std::uint64_t address) {
+    for(int row = 0; row < assemblyTable_->rowCount(); ++row) {
+        const auto* item = assemblyTable_->item(row, 0);
+        if(item == nullptr || item->data(addressRole).toULongLong() != address) {
+            continue;
+        }
+        assemblyTable_->setCurrentCell(row, 0);
+        assemblyTable_->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+        return;
+    }
+}
+
+void MainWindow::activateSymbolItem(QTreeWidgetItem* item) {
+    if(item == nullptr || !item->data(0, symbolItemKindRole).isValid()) {
+        return;
+    }
+    const auto kind = static_cast<SymbolTreeItemKind>(
+        item->data(0, symbolItemKindRole).toInt());
+    if(kind == SymbolTreeItemKind::Category) {
+        item->setExpanded(!item->isExpanded());
+        return;
+    }
+
+    const auto name = item->data(0, functionNameRole).toString();
+    if(kind == SymbolTreeItemKind::Import) {
+        statusBar()->showMessage(tr("Imported symbol: %1").arg(name));
+        return;
+    }
+    if(!item->data(0, addressRole).isValid()) {
+        return;
+    }
+
+    const auto address = item->data(0, addressRole).toULongLong();
+    if(kind == SymbolTreeItemKind::Function) {
+        static_cast<void>(selectFunction(address));
+        return;
+    }
+
+    const FunctionInfo* containingFunction = analysisSession_->functionAt(address);
+    if(containingFunction == nullptr && kind == SymbolTreeItemKind::CodeSymbol) {
+        const auto function = std::find_if(
+            analysisSession_->functions().begin(),
+            analysisSession_->functions().end(),
+            [address](const FunctionInfo& candidate) {
+                return address >= candidate.address
+                       && address - candidate.address < candidate.size;
+            });
+        if(function != analysisSession_->functions().end()) {
+            containingFunction = &*function;
+        }
+    }
+    if(containingFunction != nullptr) {
+        static_cast<void>(selectFunction(containingFunction->address));
+        focusAssemblyAddress(address);
+        statusBar()->showMessage(
+            tr("Symbol %1 at %2").arg(name, hexadecimal(address)));
+        return;
+    }
+
+    statusBar()->showMessage(
+        tr("Symbol %1 at %2 is outside decoded code.")
+            .arg(name, hexadecimal(address)));
+}
+
+void MainWindow::syncSymbolTreeFunction(std::uint64_t address) {
+    const auto item = symbolTreeFunctionItems_.find(address);
+    if(item == symbolTreeFunctionItems_.end()) {
+        return;
+    }
+    const QSignalBlocker blocker(symbolTree_);
+    if(item->second->parent() != nullptr) {
+        item->second->parent()->setExpanded(true);
+    }
+    symbolTree_->setCurrentItem(item->second);
+    symbolTree_->scrollToItem(item->second, QAbstractItemView::PositionAtCenter);
+}
+
 void MainWindow::filterFunctions(const QString& query) {
     const auto normalizedQuery = query.trimmed().toLower();
     QListWidgetItem* firstVisible = nullptr;
@@ -912,8 +1226,40 @@ void MainWindow::filterFunctions(const QString& query) {
         }
     }
 
-    if(functionList_->currentItem() != nullptr && functionList_->currentItem()->isHidden()) {
+    if(functionList_->currentItem() != nullptr
+       && functionList_->currentItem()->isHidden() && firstVisible != nullptr) {
         functionList_->setCurrentItem(firstVisible);
+    }
+
+    for(int categoryIndex = 0; categoryIndex < symbolTree_->topLevelItemCount();
+        ++categoryIndex) {
+        auto* category = symbolTree_->topLevelItem(categoryIndex);
+        const auto categoryMatches = !normalizedQuery.isEmpty()
+                                     && category->text(0).toLower().contains(normalizedQuery);
+        auto visibleChildren = 0;
+        for(int childIndex = 0; childIndex < category->childCount(); ++childIndex) {
+            auto* child = category->child(childIndex);
+            const auto name = child->data(0, functionNameRole).toString().toLower();
+            const auto address = child->data(0, addressRole).toULongLong();
+            const auto formattedAddress = address == 0
+                                              ? QString {}
+                                              : hexadecimal(address).toLower();
+            const auto matches = normalizedQuery.isEmpty() || categoryMatches
+                                 || name.contains(normalizedQuery)
+                                 || child->text(0).toLower().contains(normalizedQuery)
+                                 || formattedAddress.contains(normalizedQuery)
+                                 || (formattedAddress.size() > 2
+                                     && formattedAddress.mid(2).contains(normalizedQuery));
+            child->setHidden(!matches);
+            visibleChildren += matches ? 1 : 0;
+        }
+        const auto showEmptyMatchingCategory = categoryMatches && category->childCount() == 0;
+        category->setHidden(
+            !normalizedQuery.isEmpty() && visibleChildren == 0
+            && !showEmptyMatchingCategory);
+        if(!normalizedQuery.isEmpty() && visibleChildren > 0) {
+            category->setExpanded(true);
+        }
     }
 }
 
