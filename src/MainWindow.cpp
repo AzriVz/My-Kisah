@@ -29,6 +29,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -37,6 +38,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QResource>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
@@ -76,6 +78,10 @@ enum class SymbolTreeItemKind {
     Import,
     Section,
 };
+
+static void initializeToolbarIconResources() {
+    Q_INIT_RESOURCE(toolbar_icons);
+}
 
 static QLabel* createValueLabel(QWidget* parent, const char* objectName) {
     auto* label = new QLabel(parent);
@@ -140,13 +146,17 @@ namespace decompiler {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , analysisSession_(std::make_unique<AnalysisSession>()) {
+    initializeToolbarIconResources();
     setWindowTitle(tr("Decompiler"));
     resize(1560, 860);
 
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
     auto* openAction = fileMenu->addAction(tr("&Open Binary..."));
     openAction->setObjectName(QStringLiteral("openBinaryAction"));
+    openAction->setIcon(QIcon(QStringLiteral(":/icons/toolbar/open-binary.svg")));
     openAction->setShortcut(QKeySequence::Open);
+    openAction->setToolTip(tr("Open Binary (Ctrl+O)"));
+    openAction->setStatusTip(tr("Open and analyze an ELF binary."));
     connect(openAction, &QAction::triggered, this, &MainWindow::chooseBinary);
 
     fileMenu->addSeparator();
@@ -157,12 +167,18 @@ MainWindow::MainWindow(QWidget* parent)
     auto* navigateMenu = menuBar()->addMenu(tr("&Navigate"));
     backAction_ = navigateMenu->addAction(tr("&Back"));
     backAction_->setObjectName(QStringLiteral("backAction"));
+    backAction_->setIcon(QIcon(QStringLiteral(":/icons/toolbar/navigate-back.svg")));
     backAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Left")));
+    backAction_->setToolTip(tr("Back (Alt+Left)"));
+    backAction_->setStatusTip(tr("Return to the previously selected function."));
     connect(backAction_, &QAction::triggered, this, &MainWindow::navigateBack);
 
     forwardAction_ = navigateMenu->addAction(tr("&Forward"));
     forwardAction_->setObjectName(QStringLiteral("forwardAction"));
+    forwardAction_->setIcon(QIcon(QStringLiteral(":/icons/toolbar/navigate-forward.svg")));
     forwardAction_->setShortcut(QKeySequence(QStringLiteral("Alt+Right")));
+    forwardAction_->setToolTip(tr("Forward (Alt+Right)"));
+    forwardAction_->setStatusTip(tr("Move to the next function in navigation history."));
     connect(forwardAction_, &QAction::triggered, this, &MainWindow::navigateForward);
 
     auto* findPseudocodeAction = navigateMenu->addAction(tr("Find in &Pseudocode"));
@@ -176,7 +192,13 @@ MainWindow::MainWindow(QWidget* parent)
     auto* patchMenu = menuBar()->addMenu(tr("&Patch"));
     patchInstructionAction_ = patchMenu->addAction(tr("Patch Selected &Instruction..."));
     patchInstructionAction_->setObjectName(QStringLiteral("patchInstructionAction"));
+    patchInstructionAction_->setIcon(
+        QIcon(QStringLiteral(":/icons/toolbar/patch-instruction.svg")));
     patchInstructionAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+P")));
+    patchInstructionAction_->setToolTip(
+        tr("Patch Selected Instruction (Ctrl+Shift+P)"));
+    patchInstructionAction_->setStatusTip(
+        tr("Replace the bytes of the selected assembly instruction."));
     patchInstructionAction_->setEnabled(false);
     connect(
         patchInstructionAction_,
@@ -187,6 +209,8 @@ MainWindow::MainWindow(QWidget* parent)
     auto* navigationToolBar = addToolBar(tr("Navigation"));
     navigationToolBar->setObjectName(QStringLiteral("navigationToolBar"));
     navigationToolBar->setMovable(false);
+    navigationToolBar->setIconSize(QSize(22, 22));
+    navigationToolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     navigationToolBar->addAction(openAction);
     navigationToolBar->addSeparator();
     navigationToolBar->addAction(backAction_);
@@ -280,6 +304,7 @@ MainWindow::MainWindow(QWidget* parent)
     symbolTree_->setUniformRowHeights(true);
     symbolTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     symbolTree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    symbolTree_->setIconSize(QSize(18, 18));
     symbolTree_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     symbolTree_->setContextMenuPolicy(Qt::DefaultContextMenu);
     functionLayout->addWidget(symbolTree_, 1);
@@ -784,14 +809,23 @@ void MainWindow::populateSymbolTree() {
     symbolTreeFunctionItems_.clear();
 
     const auto folderIcon = style()->standardIcon(QStyle::SP_DirClosedIcon);
-    const auto functionIcon = style()->standardIcon(QStyle::SP_ArrowRight);
-    const auto importIcon = style()->standardIcon(QStyle::SP_ArrowDown);
-    const auto exportIcon = style()->standardIcon(QStyle::SP_ArrowUp);
+    const QIcon functionIcon(QStringLiteral(":/icons/symbols/function.svg"));
+    const QIcon importIcon(QStringLiteral(":/icons/symbols/import.svg"));
+    const QIcon exportIcon(QStringLiteral(":/icons/symbols/export.svg"));
+    const QIcon functionsFolderIcon(
+        QStringLiteral(":/icons/symbols/folder-functions.svg"));
+    const QIcon importsFolderIcon(
+        QStringLiteral(":/icons/symbols/folder-imports.svg"));
+    const QIcon exportsFolderIcon(
+        QStringLiteral(":/icons/symbols/folder-exports.svg"));
     const auto symbolIcon = style()->standardIcon(QStyle::SP_FileIcon);
 
-    const auto addCategory = [this, &folderIcon](const QString& name, const char* key) {
+    const auto addCategory = [this](
+                                 const QString& name,
+                                 const char* key,
+                                 const QIcon& icon) {
         auto* item = new QTreeWidgetItem(symbolTree_, QStringList {name});
-        item->setIcon(0, folderIcon);
+        item->setIcon(0, icon);
         item->setData(
             0,
             symbolItemKindRole,
@@ -839,14 +873,15 @@ void MainWindow::populateSymbolTree() {
         }
     };
 
-    auto* importsCategory = addCategory(tr("Imports"), "imports");
-    auto* exportsCategory = addCategory(tr("Exports"), "exports");
-    auto* functionsCategory = addCategory(tr("Functions"), "functions");
-    auto* labelsCategory = addCategory(tr("Labels"), "labels");
-    auto* dataCategory = addCategory(tr("Data"), "data");
-    auto* sectionsCategory = addCategory(tr("Sections"), "sections");
-    auto* classesCategory = addCategory(tr("Classes"), "classes");
-    auto* namespacesCategory = addCategory(tr("Namespaces"), "namespaces");
+    auto* importsCategory = addCategory(tr("Imports"), "imports", importsFolderIcon);
+    auto* exportsCategory = addCategory(tr("Exports"), "exports", exportsFolderIcon);
+    auto* functionsCategory = addCategory(
+        tr("Functions"), "functions", functionsFolderIcon);
+    auto* labelsCategory = addCategory(tr("Labels"), "labels", folderIcon);
+    auto* dataCategory = addCategory(tr("Data"), "data", folderIcon);
+    auto* sectionsCategory = addCategory(tr("Sections"), "sections", folderIcon);
+    auto* classesCategory = addCategory(tr("Classes"), "classes", folderIcon);
+    auto* namespacesCategory = addCategory(tr("Namespaces"), "namespaces", folderIcon);
 
     for(const auto& function : analysisSession_->functions()) {
         const auto name = QString::fromStdString(function.name);

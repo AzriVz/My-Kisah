@@ -1,0 +1,16 @@
+<RCC>
+    <qresource prefix="/icons/toolbar">
+        <file alias="open-binary.svg">icons/open-binary.svg</file>
+        <file alias="navigate-back.svg">icons/navigate-back.svg</file>
+        <file alias="navigate-forward.svg">icons/navigate-forward.svg</file>
+        <file alias="patch-instruction.svg">icons/patch-instruction.svg</file>
+    </qresource>
+    <qresource prefix="/icons/symbols">
+        <file alias="function.svg">icons/symbol-function.svg</file>
+        <file alias="import.svg">icons/symbol-import.svg</file>
+        <file alias="export.svg">icons/symbol-export.svg</file>
+        <file alias="folder-functions.svg">icons/folder-functions.svg</file>
+        <file alias="folder-imports.svg">icons/folder-imports.svg</file>
+        <file alias="folder-exports.svg">icons/folder-exports.svg</file>
+    </qresource>
+</RCC>

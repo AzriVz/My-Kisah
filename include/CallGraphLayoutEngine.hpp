@@ -29,6 +29,10 @@ class CallGraphLayoutEngine final {
 public:
     [[nodiscard]] CallGraphLayout
     layout(const CallGraph& graph, const QSizeF& nodeSize) const;
+    [[nodiscard]] CallGraphLayout layout(
+        const CallGraph& graph,
+        const std::unordered_map<std::uint64_t, QSizeF>& nodeSizes,
+        const QSizeF& fallbackNodeSize) const;
 };
 
 } // namespace decompiler

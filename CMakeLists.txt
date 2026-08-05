@@ -67,6 +67,7 @@ add_library(decompiler_gui STATIC)
 
 target_sources(decompiler_gui
     PRIVATE
+        resources/toolbar_icons.qrc
         src/AssemblyGraphTable.cpp
         src/MainWindow.cpp
         src/CallGraphLayoutEngine.cpp
@@ -87,6 +88,8 @@ target_sources(decompiler_gui
         include/PseudocodeHighlighter.hpp
         include/PseudocodeView.hpp
 )
+
+set_target_properties(decompiler_gui PROPERTIES AUTORCC ON)
 
 target_include_directories(decompiler_gui
     PUBLIC

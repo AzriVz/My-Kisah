@@ -30,8 +30,12 @@
 static constexpr int callGraphAddressRole = 1;
 static constexpr int callGraphNodeRole = 2;
 static constexpr qreal callGraphNodeWidth = 328.0;
-static constexpr qreal callGraphNodeHeight = 158.0;
-static constexpr std::size_t maximumAssemblyPreviewLines = 6;
+static constexpr qreal callGraphMinimumNodeHeight = 158.0;
+static constexpr qreal callGraphInstructionTop = 31.0;
+static constexpr qreal callGraphInstructionLineHeight = 15.5;
+static constexpr qreal callGraphFooterGap = 4.5;
+static constexpr qreal callGraphFooterHeight = 29.5;
+static constexpr std::size_t callGraphMinimumAssemblyBodyLines = 6;
 static constexpr qreal minimumGraphScale = 0.05;
 static constexpr qreal maximumGraphScale = 5.0;
 static constexpr qreal graphZoomStep = 1.15;
@@ -42,6 +46,15 @@ static QString graphAddress(std::uint64_t address) {
 
 static QString graphSize(std::uint64_t size) {
     return QStringLiteral("0x") + QString::number(size, 16).toUpper();
+}
+
+static qreal graphNodeHeight(bool external, std::size_t instructionCount) {
+    if(external || instructionCount <= callGraphMinimumAssemblyBodyLines) {
+        return callGraphMinimumNodeHeight;
+    }
+    return callGraphInstructionTop
+           + static_cast<qreal>(instructionCount) * callGraphInstructionLineHeight
+           + callGraphFooterGap + callGraphFooterHeight;
 }
 
 namespace decompiler {
@@ -56,6 +69,9 @@ public:
         std::size_t outgoing,
         const std::vector<Instruction>* instructions)
         : node_(std::move(node))
+        , nodeHeight_(graphNodeHeight(
+              node_.isExternal,
+              instructions == nullptr ? 0 : instructions->size()))
         , incoming_(incoming)
         , outgoing_(outgoing)
         , instructions_(instructions) {
@@ -84,7 +100,7 @@ public:
     }
 
     [[nodiscard]] QRectF boundingRect() const override {
-        return QRectF(0.0, 0.0, callGraphNodeWidth, callGraphNodeHeight);
+        return QRectF(0.0, 0.0, callGraphNodeWidth, nodeHeight_);
     }
 
     [[nodiscard]] const CallGraphNode& node() const noexcept {
@@ -92,9 +108,9 @@ public:
     }
 
     [[nodiscard]] std::size_t displayedAssemblyLineCount() const noexcept {
-        return instructions_ == nullptr
+        return node_.isExternal || instructions_ == nullptr
                    ? 0
-                   : std::min(instructions_->size(), maximumAssemblyPreviewLines);
+                   : instructions_->size();
     }
 
     [[nodiscard]] QPointF inputAnchor() const {
@@ -102,7 +118,7 @@ public:
     }
 
     [[nodiscard]] QPointF outputAnchor() const {
-        return mapToScene(QPointF(callGraphNodeWidth / 2.0, callGraphNodeHeight));
+        return mapToScene(QPointF(callGraphNodeWidth / 2.0, nodeHeight_));
     }
 
     void paint(
@@ -162,31 +178,45 @@ public:
         font.setPointSizeF(7.7);
         painter->setFont(font);
         const QFontMetricsF instructionMetrics(font);
-        constexpr qreal instructionTop = 31.0;
-        constexpr qreal instructionLineHeight = 15.5;
         constexpr qreal instructionAddressWidth = 79.0;
         constexpr qreal instructionMnemonicWidth = 61.0;
+        const auto footerTop = nodeHeight_ - callGraphFooterHeight;
+        const auto emptyMessageHeight = footerTop - callGraphInstructionTop
+                                        - callGraphFooterGap;
 
         if(node_.isExternal) {
             painter->setPen(QColor(QStringLiteral("#666666")));
             painter->drawText(
-                QRectF(7.0, instructionTop, callGraphNodeWidth - 14.0, 93.0),
+                QRectF(
+                    7.0,
+                    callGraphInstructionTop,
+                    callGraphNodeWidth - 14.0,
+                    emptyMessageHeight),
                 Qt::AlignCenter,
                 QStringLiteral("<external target - no local assembly>"));
         } else if(instructions_ == nullptr || instructions_->empty()) {
             painter->setPen(QColor(QStringLiteral("#666666")));
             painter->drawText(
-                QRectF(7.0, instructionTop, callGraphNodeWidth - 14.0, 93.0),
+                QRectF(
+                    7.0,
+                    callGraphInstructionTop,
+                    callGraphNodeWidth - 14.0,
+                    emptyMessageHeight),
                 Qt::AlignCenter,
                 QStringLiteral("<no decoded instructions>"));
         } else {
             for(std::size_t index = 0; index < displayedAssemblyLineCount(); ++index) {
                 const auto& instruction = instructions_->at(index);
-                const auto top = instructionTop
-                                 + static_cast<qreal>(index) * instructionLineHeight;
+                const auto top = callGraphInstructionTop
+                                 + static_cast<qreal>(index)
+                                       * callGraphInstructionLineHeight;
                 painter->setPen(QColor(QStringLiteral("#666666")));
                 painter->drawText(
-                    QRectF(7.0, top, instructionAddressWidth, instructionLineHeight),
+                    QRectF(
+                        7.0,
+                        top,
+                        instructionAddressWidth,
+                        callGraphInstructionLineHeight),
                     Qt::AlignLeft | Qt::AlignVCenter,
                     graphAddress(instruction.address));
 
@@ -194,7 +224,10 @@ public:
                 painter->setFont(font);
                 painter->setPen(QColor(QStringLiteral("#202020")));
                 const QRectF mnemonicRect(
-                    88.0, top, instructionMnemonicWidth, instructionLineHeight);
+                    88.0,
+                    top,
+                    instructionMnemonicWidth,
+                    callGraphInstructionLineHeight);
                 painter->drawText(
                     mnemonicRect,
                     Qt::AlignLeft | Qt::AlignVCenter,
@@ -209,7 +242,7 @@ public:
                     151.0,
                     top,
                     callGraphNodeWidth - 158.0,
-                    instructionLineHeight);
+                    callGraphInstructionLineHeight);
                 painter->drawText(
                     operandRect,
                     Qt::AlignLeft | Qt::AlignVCenter,
@@ -220,7 +253,6 @@ public:
             }
         }
 
-        constexpr qreal footerTop = 128.5;
         painter->setPen(QPen(QColor(QStringLiteral("#B0B0B0")), 0.8));
         painter->drawLine(
             QPointF(0.5, footerTop),
@@ -234,8 +266,7 @@ public:
                                 ? QStringLiteral("external | in %1 | out %2")
                                       .arg(incoming_)
                                       .arg(outgoing_)
-                                : QStringLiteral("showing %1/%2 instructions | in %3 | out %4 | size %5")
-                                      .arg(displayedAssemblyLineCount())
+                                : QStringLiteral("%1 instructions | in %2 | out %3 | size %4")
                                       .arg(instructionCount)
                                       .arg(incoming_)
                                       .arg(outgoing_)
@@ -269,6 +300,7 @@ protected:
 
 private:
     CallGraphNode node_;
+    qreal nodeHeight_ = callGraphMinimumNodeHeight;
     std::size_t incoming_ = 0;
     std::size_t outgoing_ = 0;
     const std::vector<Instruction>* instructions_ = nullptr;
@@ -814,15 +846,33 @@ void CallGraphView::rebuildScene(bool preserveSelection) {
         ++outgoing[edge.callerAddress];
     }
 
-    const CallGraphLayoutEngine layoutEngine;
-    auto layout = layoutEngine.layout(
-        *graph_, QSizeF(callGraphNodeWidth, callGraphNodeHeight));
-    components_ = std::move(layout.components);
-    nodeItems_.reserve(graph_->nodes().size());
+    std::unordered_map<std::uint64_t, const std::vector<Instruction>*> nodeInstructions;
+    std::unordered_map<std::uint64_t, QSizeF> nodeSizes;
+    nodeInstructions.reserve(graph_->nodes().size());
+    nodeSizes.reserve(graph_->nodes().size());
     for(const auto& node : graph_->nodes()) {
         const auto* instructions = instructionProvider_ == nullptr
                                        ? nullptr
                                        : instructionProvider_(node.address);
+        nodeInstructions.emplace(node.address, instructions);
+        nodeSizes.emplace(
+            node.address,
+            QSizeF(
+                callGraphNodeWidth,
+                graphNodeHeight(
+                    node.isExternal,
+                    instructions == nullptr ? 0 : instructions->size())));
+    }
+
+    const CallGraphLayoutEngine layoutEngine;
+    auto layout = layoutEngine.layout(
+        *graph_,
+        nodeSizes,
+        QSizeF(callGraphNodeWidth, callGraphMinimumNodeHeight));
+    components_ = std::move(layout.components);
+    nodeItems_.reserve(graph_->nodes().size());
+    for(const auto& node : graph_->nodes()) {
+        const auto* instructions = nodeInstructions.at(node.address);
         auto* item = new CallGraphNodeItem(
             node,
             incoming[node.address],

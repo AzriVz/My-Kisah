@@ -193,6 +193,18 @@ static std::unordered_map<std::uint64_t, std::size_t> componentLayers(
 CallGraphLayout CallGraphLayoutEngine::layout(
     const CallGraph& graph,
     const QSizeF& nodeSize) const {
+    std::unordered_map<std::uint64_t, QSizeF> nodeSizes;
+    nodeSizes.reserve(graph.nodes().size());
+    for(const auto& node : graph.nodes()) {
+        nodeSizes.emplace(node.address, nodeSize);
+    }
+    return layout(graph, nodeSizes, nodeSize);
+}
+
+CallGraphLayout CallGraphLayoutEngine::layout(
+    const CallGraph& graph,
+    const std::unordered_map<std::uint64_t, QSizeF>& nodeSizes,
+    const QSizeF& fallbackNodeSize) const {
     CallGraphLayout result;
     if(graph.nodes().empty()) {
         return result;
@@ -205,6 +217,10 @@ CallGraphLayout CallGraphLayoutEngine::layout(
     const auto adjacency = undirectedAdjacency(graph);
     auto components = connectedComponents(graph, adjacency);
     const auto incoming = incomingCounts(graph);
+    const auto sizeFor = [&nodeSizes, &fallbackNodeSize](std::uint64_t address) {
+        const auto size = nodeSizes.find(address);
+        return size == nodeSizes.end() ? fallbackNodeSize : size->second;
+    };
 
     std::sort(components.begin(), components.end(), [&](const auto& left, const auto& right) {
         const auto leftRoot = chooseRoot(graph, left, incoming);
@@ -236,16 +252,31 @@ CallGraphLayout CallGraphLayoutEngine::layout(
         for(const auto address : addresses) {
             grouped[layers.at(address)].push_back(address);
         }
-        std::size_t widestLayer = 1;
+        std::vector<qreal> layerWidths(grouped.size(), 0.0);
+        std::vector<qreal> layerHeights(grouped.size(), 0.0);
         for(auto& layer : grouped) {
             std::sort(layer.begin(), layer.end());
-            widestLayer = std::max(widestLayer, layer.size());
         }
-
-        const auto width = static_cast<qreal>(widestLayer) * nodeSize.width()
-                           + static_cast<qreal>(widestLayer - 1) * horizontalSpacing;
-        const auto height = static_cast<qreal>(grouped.size()) * nodeSize.height()
-                            + static_cast<qreal>(grouped.size() - 1) * verticalSpacing;
+        qreal width = 0.0;
+        qreal height = 0.0;
+        for(std::size_t depth = 0; depth < grouped.size(); ++depth) {
+            const auto& layer = grouped[depth];
+            for(const auto address : layer) {
+                const auto nodeSize = sizeFor(address);
+                layerWidths[depth] += nodeSize.width();
+                layerHeights[depth] = std::max(
+                    layerHeights[depth], nodeSize.height());
+            }
+            if(layer.size() > 1) {
+                layerWidths[depth] += static_cast<qreal>(layer.size() - 1)
+                                      * horizontalSpacing;
+            }
+            width = std::max(width, layerWidths[depth]);
+            height += layerHeights[depth];
+        }
+        if(grouped.size() > 1) {
+            height += static_cast<qreal>(grouped.size() - 1) * verticalSpacing;
+        }
         if(componentX > 0.0 && componentX + width > maximumRowWidth) {
             componentX = 0.0;
             componentY += rowHeight + componentSpacing;
@@ -253,25 +284,22 @@ CallGraphLayout CallGraphLayoutEngine::layout(
         }
 
         QRectF bounds;
+        auto layerY = componentY;
         for(std::size_t depth = 0; depth < grouped.size(); ++depth) {
             const auto& layer = grouped[depth];
             if(layer.empty()) {
                 continue;
             }
-            const auto layerWidth = static_cast<qreal>(layer.size()) * nodeSize.width()
-                                    + static_cast<qreal>(layer.size() - 1)
-                                          * horizontalSpacing;
-            const auto startX = componentX + (width - layerWidth) / 2.0;
+            auto nodeX = componentX + (width - layerWidths[depth]) / 2.0;
             for(std::size_t index = 0; index < layer.size(); ++index) {
-                const QPointF position(
-                    startX + static_cast<qreal>(index)
-                                 * (nodeSize.width() + horizontalSpacing),
-                    componentY + static_cast<qreal>(depth)
-                                     * (nodeSize.height() + verticalSpacing));
+                const auto nodeSize = sizeFor(layer[index]);
+                const QPointF position(nodeX, layerY);
                 result.nodePositions.emplace(layer[index], position);
                 const QRectF nodeBounds(position, nodeSize);
                 bounds = bounds.isNull() ? nodeBounds : bounds.united(nodeBounds);
+                nodeX += nodeSize.width() + horizontalSpacing;
             }
+            layerY += layerHeights[depth] + verticalSpacing;
         }
 
         result.components.push_back(CallGraphComponent {
