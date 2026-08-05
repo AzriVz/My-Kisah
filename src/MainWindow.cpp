@@ -39,6 +39,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QResource>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
@@ -332,8 +333,13 @@ MainWindow::MainWindow(QWidget* parent)
     assemblyTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
     assemblyTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     assemblyTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    assemblyTable_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    assemblyTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    assemblyTable_->horizontalScrollBar()->setObjectName(
+        QStringLiteral("assemblyHorizontalScrollBar"));
     assemblyTable_->setColumnWidth(0, 340);
+    assemblyTable_->setColumnWidth(3, 520);
     assemblyLayout->addWidget(assemblyTable_);
 
     callGraphPanel_ = new CallGraphPanel(analysisTabs);
