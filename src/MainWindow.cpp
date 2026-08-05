@@ -455,7 +455,7 @@ MainWindow::MainWindow(QWidget* parent)
     pseudocodeView_->setCallActivationHandler(
         [this](std::uint64_t address) { navigateFromPseudocode(address); });
     callGraphPanel_->setNodeActivationHandler(
-        [this](std::uint64_t address) { selectFunction(address); });
+        [this](std::uint64_t address) { navigateFromCallGraph(address); });
     callGraphPanel_->setInstructionProvider([this](std::uint64_t address) {
         return analysisSession_->instructionsFor(address);
     });
@@ -1457,6 +1457,38 @@ void MainWindow::navigateFromPseudocode(std::uint64_t address) {
             tr("Pseudocode call target %1 is outside the discovered functions.")
                 .arg(hexadecimal(address)));
     }
+}
+
+void MainWindow::navigateFromCallGraph(std::uint64_t address) {
+    if(!selectFunction(address)) {
+        statusBar()->showMessage(
+            tr("Call Graph target %1 has no local reconstructed function.")
+                .arg(hexadecimal(address)));
+        return;
+    }
+    focusPseudocodeFunctionDeclaration(address);
+}
+
+void MainWindow::focusPseudocodeFunctionDeclaration(std::uint64_t address) {
+    const auto* function = analysisSession_->functionAt(address);
+    if(function == nullptr || pseudocodeView_->document()->isEmpty()) {
+        return;
+    }
+
+    const auto identifier = QString::fromStdString(
+        PseudocodeGenerator::identifierForFunction(function->name, function->address));
+    auto cursor = pseudocodeView_->document()->find(
+        identifier,
+        QTextCursor(pseudocodeView_->document()),
+        QTextDocument::FindWholeWords);
+    if(cursor.isNull()) {
+        return;
+    }
+
+    cursor.movePosition(QTextCursor::StartOfLine);
+    cursor.movePosition(QTextCursor::EndOfLine, QTextCursor::KeepAnchor);
+    pseudocodeView_->setTextCursor(cursor);
+    pseudocodeView_->centerCursor();
 }
 
 void MainWindow::navigateBack() {

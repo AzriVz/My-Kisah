@@ -59,6 +59,8 @@ private:
     void displayFunction(QListWidgetItem* item);
     void navigateFromAssembly(int row);
     void navigateFromPseudocode(std::uint64_t address);
+    void navigateFromCallGraph(std::uint64_t address);
+    void focusPseudocodeFunctionDeclaration(std::uint64_t address);
     void navigateBack();
     void navigateForward();
     void recordNavigation(std::uint64_t address);

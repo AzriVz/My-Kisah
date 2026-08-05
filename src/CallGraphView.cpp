@@ -768,6 +768,13 @@ void CallGraphView::mouseReleaseEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if(event->button() == Qt::LeftButton) {
+        if(auto* node = nodeItemFor(itemAt(event->position().toPoint()))) {
+            static_cast<void>(activateNode(node->node().address));
+            event->accept();
+            return;
+        }
+    }
     QGraphicsView::mouseReleaseEvent(event);
 }
 
