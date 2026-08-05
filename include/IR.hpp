@@ -41,7 +41,9 @@ enum class IROpcode {
     BitXor,
     ShiftLeft,
     ShiftRight,
+    Negate,
     Compare,
+    ConditionalSelect,
     Cast,
     Call,
     Return,
@@ -81,4 +83,3 @@ struct IRFunction {
 };
 
 } // namespace decompiler
-

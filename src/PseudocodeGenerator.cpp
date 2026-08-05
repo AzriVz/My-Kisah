@@ -130,6 +130,21 @@ static void emitStatement(
     case RecoveredStatementKind::Assignment:
         output << statement.destination << " = " << statement.expression << ";\n";
         break;
+    case RecoveredStatementKind::ConditionalAssignment:
+        output << "if (" << statement.expression << ") {\n";
+        indent(output, depth + 1);
+        output << statement.destination << " = "
+               << (statement.arguments.empty() ? "/* unknown */" : statement.arguments[0])
+               << ";\n";
+        indent(output, depth);
+        output << "} else {\n";
+        indent(output, depth + 1);
+        output << statement.destination << " = "
+               << (statement.arguments.size() < 2 ? "/* unknown */" : statement.arguments[1])
+               << ";\n";
+        indent(output, depth);
+        output << "}\n";
+        break;
     case RecoveredStatementKind::Call: {
         const auto* prototype = statement.callTarget
                                     ? prototypeAt(prototypes, *statement.callTarget)

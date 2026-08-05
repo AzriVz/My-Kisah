@@ -5,10 +5,94 @@
 #include "IRLifter.hpp"
 #include "PseudocodeGenerator.hpp"
 
+#include <elf.h>
+
 #include <algorithm>
+#include <cctype>
+#include <optional>
 #include <string>
 
 namespace decompiler {
+
+static std::optional<std::string> readOnlyStringLiteral(
+    const ElfLoader& loader,
+    std::uint64_t address) {
+    constexpr std::size_t maximumLiteralLength = 4096;
+    for(const auto& section : loader.sections()) {
+        if((section.flags & SHF_ALLOC) == 0 || (section.flags & SHF_WRITE) != 0
+           || (section.flags & SHF_EXECINSTR) != 0 || section.type == SHT_NOBITS
+           || address < section.address || address - section.address >= section.size) {
+            continue;
+        }
+
+        const auto bytes = loader.bytesForSection(section.name);
+        const auto offset = address - section.address;
+        if(bytes.empty() || offset >= bytes.size()) {
+            continue;
+        }
+
+        std::string literal;
+        const auto available = std::min<std::size_t>(
+            bytes.size() - static_cast<std::size_t>(offset), maximumLiteralLength + 1);
+        bool terminated = false;
+        for(std::size_t index = 0; index < available; ++index) {
+            const auto value = bytes[static_cast<std::size_t>(offset) + index];
+            if(value == 0) {
+                terminated = true;
+                break;
+            }
+            if(std::isprint(value) == 0 && value != '\n' && value != '\r' && value != '\t') {
+                literal.clear();
+                break;
+            }
+            switch(value) {
+            case '\\':
+                literal += "\\\\";
+                break;
+            case '"':
+                literal += "\\\"";
+                break;
+            case '\n':
+                literal += "\\n";
+                break;
+            case '\r':
+                literal += "\\r";
+                break;
+            case '\t':
+                literal += "\\t";
+                break;
+            default:
+                literal.push_back(static_cast<char>(value));
+                break;
+            }
+        }
+        if(terminated && !literal.empty()) {
+            return '"' + literal + '"';
+        }
+    }
+    return std::nullopt;
+}
+
+static void annotateReadOnlyLiterals(IRFunction& function, const ElfLoader& loader) {
+    const auto annotate = [&loader](IRValue& value) {
+        if(value.kind != IRValueKind::Immediate || !value.address) {
+            return;
+        }
+        if(const auto literal = readOnlyStringLiteral(loader, *value.address)) {
+            value.name = *literal;
+            value.type = ValueType::Pointer;
+        }
+    };
+
+    for(auto& instruction : function.instructions) {
+        if(instruction.destination) {
+            annotate(*instruction.destination);
+        }
+        for(auto& operand : instruction.operands) {
+            annotate(operand);
+        }
+    }
+}
 
 bool AnalysisSession::analyze(const std::filesystem::path& path) {
     reset();
@@ -96,6 +180,7 @@ bool AnalysisSession::analyze(const std::filesystem::path& path) {
 
         auto abiAnalysis = abiAnalyzer.analyze(result.instructions);
         auto ir = irLifter.lift(function, result.instructions, abiAnalysis);
+        annotateReadOnlyLiterals(ir, elfLoader_);
         controlFlowGraphCache_.emplace(function.address, std::move(controlFlowGraph));
         abiAnalysisCache_.emplace(function.address, std::move(abiAnalysis));
         irCache_.emplace(function.address, std::move(ir));

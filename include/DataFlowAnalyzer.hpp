@@ -22,6 +22,7 @@ struct RecoveredVariable {
 
 enum class RecoveredStatementKind {
     Assignment,
+    ConditionalAssignment,
     Call,
     Return,
     Unsupported,

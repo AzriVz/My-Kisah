@@ -101,6 +101,64 @@ static std::string fallbackFunctionName(std::uint64_t address) {
     return name.str();
 }
 
+static bool isAlignmentPadding(const Instruction& instruction) noexcept {
+    return instruction.mnemonic == "nop" || instruction.mnemonic == "int3";
+}
+
+static bool looksLikeFramePrologue(
+    const std::vector<Instruction>& instructions,
+    std::size_t index) {
+    if(index + 1 >= instructions.size()) {
+        return false;
+    }
+    const auto& push = instructions[index];
+    const auto& move = instructions[index + 1];
+    return push.mnemonic == "push" && push.operandText == "rbp"
+           && move.mnemonic == "mov" && move.operandText == "rbp, rsp";
+}
+
+static bool addStrippedHeuristicCandidates(
+    std::map<std::uint64_t, FunctionCandidate>& candidates,
+    const SectionInfo& text,
+    std::span<const std::uint8_t> textBytes,
+    const Disassembler& disassembler,
+    std::string& errorMessage) {
+    const auto result = disassembler.disassemble(textBytes, text.address);
+    if(!result.succeeded()) {
+        errorMessage = result.errorMessage;
+        return false;
+    }
+
+    bool possibleFunctionBoundary = true;
+    for(std::size_t index = 0; index < result.instructions.size(); ++index) {
+        const auto& instruction = result.instructions[index];
+        if(possibleFunctionBoundary) {
+            if(isAlignmentPadding(instruction)) {
+                continue;
+            }
+
+            const bool hasEntryMarker = instruction.mnemonic == "endbr64"
+                                        || instruction.mnemonic == "endbr32";
+            const bool hasFramePrologue = looksLikeFramePrologue(result.instructions, index);
+            const bool isAligned = instruction.address % 16 == 0;
+            if(hasEntryMarker || hasFramePrologue || isAligned) {
+                addCandidate(
+                    candidates,
+                    instruction.address,
+                    {},
+                    0,
+                    FunctionSource::Heuristic);
+            }
+            possibleFunctionBoundary = false;
+        }
+
+        possibleFunctionBoundary = instruction.kind == InstructionKind::Return
+                                   || instruction.kind == InstructionKind::UnconditionalJump
+                                   || instruction.kind == InstructionKind::IndirectJump;
+    }
+    return true;
+}
+
 std::vector<FunctionInfo>
 FunctionDiscovery::discover(const ElfLoader& loader, const Disassembler& disassembler) {
     errorMessage_.clear();
@@ -150,6 +208,12 @@ FunctionDiscovery::discover(const ElfLoader& loader, const Disassembler& disasse
 
     if(candidates.empty()) {
         errorMessage_ = "No initial function candidates were found.";
+        return {};
+    }
+
+    if(loader.metadata().isStripped
+       && !addStrippedHeuristicCandidates(
+           candidates, *text, textBytes, disassembler, errorMessage_)) {
         return {};
     }
 

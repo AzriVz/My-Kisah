@@ -5,6 +5,7 @@
 #include <capstone/x86.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iomanip>
 #include <limits>
@@ -429,6 +430,77 @@ static IRInstruction liftMultiply(
     return lifted;
 }
 
+static bool isConditionCode(std::string_view code) noexcept {
+    constexpr std::array conditionCodes {
+        std::string_view {"a"},
+        std::string_view {"ae"},
+        std::string_view {"b"},
+        std::string_view {"be"},
+        std::string_view {"e"},
+        std::string_view {"g"},
+        std::string_view {"ge"},
+        std::string_view {"l"},
+        std::string_view {"le"},
+        std::string_view {"ne"},
+        std::string_view {"no"},
+        std::string_view {"np"},
+        std::string_view {"ns"},
+        std::string_view {"o"},
+        std::string_view {"p"},
+        std::string_view {"s"},
+    };
+    return std::find(conditionCodes.begin(), conditionCodes.end(), code)
+           != conditionCodes.end();
+}
+
+static bool isConditionalSelect(const Instruction& instruction) noexcept {
+    auto mnemonic = std::string_view(instruction.mnemonic);
+    if(mnemonic.starts_with("set")) {
+        mnemonic.remove_prefix(3);
+        return isConditionCode(mnemonic);
+    }
+    if(mnemonic.starts_with("cmov")) {
+        mnemonic.remove_prefix(4);
+        return isConditionCode(mnemonic);
+    }
+    return false;
+}
+
+static IRInstruction liftConditionalSelect(
+    const Instruction& instruction,
+    const AbiAnalysisResult& analysis) {
+    if(instruction.operands.empty()) {
+        return unknownInstruction(instruction);
+    }
+
+    IRInstruction lifted;
+    lifted.opcode = IROpcode::ConditionalSelect;
+    lifted.destination =
+        operandValue(instruction.operands[0], analysis, true, &instruction);
+    lifted.sourceAddress = instruction.address;
+
+    if(instruction.mnemonic.starts_with("set")) {
+        InstructionOperand trueValue;
+        trueValue.kind = OperandKind::Immediate;
+        trueValue.size = 1;
+        trueValue.immediate = 1;
+        InstructionOperand falseValue = trueValue;
+        falseValue.immediate = 0;
+        lifted.operands = {immediateValue(trueValue), immediateValue(falseValue)};
+        return lifted;
+    }
+
+    if(instruction.mnemonic.starts_with("cmov") && instruction.operands.size() >= 2) {
+        lifted.operands = {
+            operandValue(instruction.operands[1], analysis, false, &instruction),
+            operandValue(instruction.operands[0], analysis, false, &instruction),
+        };
+        return lifted;
+    }
+
+    return unknownInstruction(instruction);
+}
+
 static IRInstruction liftInstruction(
     const Instruction& instruction,
     const AbiAnalysisResult& analysis) {
@@ -487,6 +559,20 @@ static IRInstruction liftInstruction(
         return lifted;
     }
 
+    if(isConditionalSelect(instruction)) {
+        return liftConditionalSelect(instruction, analysis);
+    }
+
+    if(instruction.mnemonic == "endbr64" || instruction.mnemonic == "endbr32") {
+        return IRInstruction {
+            .opcode = IROpcode::Nop,
+            .destination = std::nullopt,
+            .operands = {},
+            .sourceAddress = instruction.address,
+            .comment = {},
+        };
+    }
+
     switch(instruction.architectureId) {
     case X86_INS_MOV:
     case X86_INS_MOVABS:
@@ -525,6 +611,19 @@ static IRInstruction liftInstruction(
     case X86_INS_SHR:
     case X86_INS_SAR:
         return binaryInstruction(instruction, analysis, IROpcode::ShiftRight);
+    case X86_INS_NEG:
+        if(instruction.operands.empty()) {
+            return unknownInstruction(instruction);
+        }
+        return IRInstruction {
+            .opcode = IROpcode::Negate,
+            .destination = operandValue(
+                instruction.operands[0], analysis, true, &instruction),
+            .operands = {operandValue(
+                instruction.operands[0], analysis, false, &instruction)},
+            .sourceAddress = instruction.address,
+            .comment = {},
+        };
     case X86_INS_CMP:
     case X86_INS_TEST: {
         IRInstruction lifted;

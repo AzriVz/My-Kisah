@@ -57,7 +57,10 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <exception>
+#include <future>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -398,6 +401,11 @@ MainWindow::MainWindow(QWidget* parent)
         this,
         [this](QTreeWidgetItem* item, int) { activateSymbolItem(item); });
     connect(
+        symbolTree_,
+        &QTreeWidget::itemActivated,
+        this,
+        [this](QTreeWidgetItem* item, int) { activateSymbolItem(item); });
+    connect(
         assemblyTable_,
         &QTableWidget::cellDoubleClicked,
         this,
@@ -477,16 +485,60 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
     analysisProgress_->show();
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    const auto analyzed = analysisSession_->analyze(path);
+
+    struct BackgroundAnalysisResult {
+        std::unique_ptr<AnalysisSession> session;
+        std::string unexpectedError;
+    };
+
+    BackgroundAnalysisResult backgroundResult;
+    try {
+        auto future = std::async(std::launch::async, [path] {
+            BackgroundAnalysisResult result {
+                .session = std::make_unique<AnalysisSession>(),
+                .unexpectedError = {},
+            };
+            try {
+                static_cast<void>(result.session->analyze(path));
+            } catch(const std::exception& error) {
+                result.unexpectedError = error.what();
+            } catch(...) {
+                result.unexpectedError = "Unknown analysis failure.";
+            }
+            return result;
+        });
+
+        using namespace std::chrono_literals;
+        while(future.wait_for(10ms) != std::future_status::ready) {
+            // Analysis owns no widgets and runs off the GUI thread. Processing only
+            // non-input events here keeps painting, progress, and window management alive
+            // without allowing a second load to re-enter this synchronous API.
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+        }
+        backgroundResult = future.get();
+    } catch(const std::exception& error) {
+        backgroundResult.session = std::make_unique<AnalysisSession>();
+        backgroundResult.unexpectedError = error.what();
+    } catch(...) {
+        backgroundResult.session = std::make_unique<AnalysisSession>();
+        backgroundResult.unexpectedError = "Unknown background-analysis failure.";
+    }
+
+    analysisSession_ = std::move(backgroundResult.session);
+    const auto analyzed = backgroundResult.unexpectedError.empty()
+                          && analysisSession_->isValid();
     QApplication::restoreOverrideCursor();
     analysisProgress_->hide();
 
     if(!analyzed) {
         clearBinaryInformation();
         setWindowTitle(tr("Decompiler"));
+        const auto errorMessage = backgroundResult.unexpectedError.empty()
+                                      ? std::string(analysisSession_->errorMessage())
+                                      : std::move(backgroundResult.unexpectedError);
         statusBar()->showMessage(
             tr("Failed to analyze binary: %1")
-                .arg(QString::fromStdString(std::string(analysisSession_->errorMessage()))));
+                .arg(QString::fromStdString(errorMessage)));
         return false;
     }
 
@@ -591,10 +643,15 @@ void MainWindow::chooseBinary() {
     }
 
     if(!loadBinary(std::filesystem::path(fileName.toStdString()))) {
+        auto errorMessage = QString::fromStdString(
+            std::string(analysisSession_->errorMessage()));
+        if(errorMessage.isEmpty()) {
+            errorMessage = statusBar()->currentMessage();
+        }
         QMessageBox::critical(
             this,
             tr("Unable to Open Binary"),
-            QString::fromStdString(std::string(analysisSession_->errorMessage())));
+            errorMessage);
     }
 }
 
@@ -895,6 +952,12 @@ void MainWindow::populateSymbolTree() {
                 .arg(hexadecimal(function.address))
                 .arg(sourceDescription(function.source))
                 .arg(function.sizeIsEstimated ? tr("\nSize is estimated") : QString {}));
+        item->setText(
+            0,
+            tr("%1  %2  (%3 bytes)")
+                .arg(name)
+                .arg(hexadecimal(function.address))
+                .arg(static_cast<qulonglong>(function.size)));
         symbolTreeFunctionItems_.insert_or_assign(function.address, item);
     }
 

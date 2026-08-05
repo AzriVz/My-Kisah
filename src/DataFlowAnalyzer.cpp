@@ -299,38 +299,114 @@ static std::string conditionExpression(
         return binaryExpression(comparison->left, operation, comparison->right);
     };
 
-    switch(instruction.architectureId) {
-    case X86_INS_JE:
-        return comparisonText("==");
-    case X86_INS_JNE:
-        return comparisonText("!=");
-    case X86_INS_JL:
-    case X86_INS_JB:
-        return comparisonText("<");
-    case X86_INS_JLE:
-    case X86_INS_JBE:
-        return comparisonText("<=");
-    case X86_INS_JG:
-    case X86_INS_JA:
-        return comparisonText(">");
-    case X86_INS_JGE:
-    case X86_INS_JAE:
-        return comparisonText(">=");
-    case X86_INS_JS:
-        return binaryExpression(testExpression(*comparison), "<", "0");
-    case X86_INS_JNS:
-        return binaryExpression(testExpression(*comparison), ">=", "0");
-    case X86_INS_JO:
-        return "overflow";
-    case X86_INS_JNO:
-        return "!overflow";
-    case X86_INS_JP:
-        return "parity_even";
-    case X86_INS_JNP:
-        return "!parity_even";
-    default:
-        return "condition_" + hexadecimal(instruction.address).substr(2);
+    auto conditionCode = std::string_view(instruction.mnemonic);
+    if(conditionCode.starts_with("cmov")) {
+        conditionCode.remove_prefix(4);
+    } else if(conditionCode.starts_with("set")) {
+        conditionCode.remove_prefix(3);
+    } else if(conditionCode.starts_with('j')) {
+        conditionCode.remove_prefix(1);
     }
+
+    if(conditionCode == "e" || conditionCode == "z") {
+        return comparisonText("==");
+    }
+    if(conditionCode == "ne" || conditionCode == "nz") {
+        return comparisonText("!=");
+    }
+    if(conditionCode == "l" || conditionCode == "nge" || conditionCode == "b"
+       || conditionCode == "c" || conditionCode == "nae") {
+        return comparisonText("<");
+    }
+    if(conditionCode == "le" || conditionCode == "ng" || conditionCode == "be"
+       || conditionCode == "na") {
+        return comparisonText("<=");
+    }
+    if(conditionCode == "g" || conditionCode == "nle" || conditionCode == "a"
+       || conditionCode == "nbe") {
+        return comparisonText(">");
+    }
+    if(conditionCode == "ge" || conditionCode == "nl" || conditionCode == "ae"
+       || conditionCode == "nb" || conditionCode == "nc") {
+        return comparisonText(">=");
+    }
+    if(conditionCode == "s") {
+        return binaryExpression(testExpression(*comparison), "<", "0");
+    }
+    if(conditionCode == "ns") {
+        return binaryExpression(testExpression(*comparison), ">=", "0");
+    }
+    if(conditionCode == "o") {
+        return "overflow";
+    }
+    if(conditionCode == "no") {
+        return "!overflow";
+    }
+    if(conditionCode == "p" || conditionCode == "pe") {
+        return "parity_even";
+    }
+    if(conditionCode == "np" || conditionCode == "po") {
+        return "!parity_even";
+    }
+    return "condition_" + hexadecimal(instruction.address).substr(2);
+}
+
+static void writeConditionalValue(
+    const IRValue& destination,
+    std::string condition,
+    std::string trueExpression,
+    std::string falseExpression,
+    std::uint64_t address,
+    DataFlowAnalysis& analysis,
+    RecoveredBlock& block,
+    RecoveryState& state) {
+    std::string destinationName = destination.name;
+    if(destination.registerId) {
+        const auto registerId = *destination.registerId;
+        if(isFrameRegister(registerId)) {
+            return;
+        }
+
+        if(const auto variable = state.registerVariables.find(registerId);
+           variable != state.registerVariables.end()) {
+            destinationName = variable->second;
+        } else {
+            if(registerId == RegisterId::Rax && !state.variableNames.contains("result")) {
+                destinationName = "result";
+            } else {
+                do {
+                    destinationName = "temp" + std::to_string(state.nextTemporary++);
+                } while(state.variableNames.contains(destinationName));
+            }
+            state.registerVariables.emplace(registerId, destinationName);
+            addVariable(
+                analysis,
+                state,
+                RecoveredVariable {
+                    .name = destinationName,
+                    .type = destination.type,
+                    .bitWidth = destination.bitWidth,
+                    .initializer = std::nullopt,
+                });
+        }
+
+        state.availableRegisters.insert(registerId);
+        state.registerValues.erase(registerId);
+    } else if(destination.stackOffset) {
+        state.stackValues.insert_or_assign(*destination.stackOffset, destinationName);
+    }
+
+    if(destinationName.empty()) {
+        destinationName = "unknown";
+    }
+    block.statements.push_back(RecoveredStatement {
+        .kind = RecoveredStatementKind::ConditionalAssignment,
+        .sourceAddress = address,
+        .destination = std::move(destinationName),
+        .expression = std::move(condition),
+        .callTarget = std::nullopt,
+        .arguments = {std::move(trueExpression), std::move(falseExpression)},
+    });
 }
 
 static void prepareRegisterVariables(
@@ -465,6 +541,22 @@ static void recoverInstruction(
                 state);
         }
         break;
+    case IROpcode::Negate:
+        if(ir.destination && !ir.operands.empty()) {
+            auto expression = "(-" + valueText(ir.operands.front(), state) + ")";
+            comparison = ComparisonState {
+                .left = expression,
+                .right = "0",
+                .isBitTest = false,
+            };
+            writeValue(
+                *ir.destination,
+                std::move(expression),
+                ir.sourceAddress,
+                block,
+                state);
+        }
+        break;
     case IROpcode::Compare:
         if(ir.operands.size() >= 2) {
             comparison = ComparisonState {
@@ -472,6 +564,19 @@ static void recoverInstruction(
                 .right = valueText(ir.operands[1], state),
                 .isBitTest = instruction.architectureId == X86_INS_TEST,
             };
+        }
+        break;
+    case IROpcode::ConditionalSelect:
+        if(ir.destination && ir.operands.size() >= 2) {
+            writeConditionalValue(
+                *ir.destination,
+                conditionExpression(instruction, comparison),
+                valueText(ir.operands[0], state),
+                valueText(ir.operands[1], state),
+                ir.sourceAddress,
+                analysis,
+                block,
+                state);
         }
         break;
     case IROpcode::Call: {
