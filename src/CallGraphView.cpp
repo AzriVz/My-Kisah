@@ -423,7 +423,7 @@ CallGraphView::CallGraphView(QWidget* parent)
     setDragMode(QGraphicsView::NoDrag);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
-    setBackgroundBrush(QColor(QStringLiteral("#EAF3F4")));
+    setBackgroundBrush(QColor(QStringLiteral("#F5F5F5")));
     setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setFrameShape(QFrame::StyledPanel);
@@ -463,7 +463,7 @@ void CallGraphView::clearGraph() {
     activeFunction_ = 0;
     resetTransform();
     auto* message = scene()->addText(tr("No call graph data available."));
-    message->setDefaultTextColor(QColor(QStringLiteral("#536B70")));
+    message->setDefaultTextColor(QColor(QStringLiteral("#555555")));
     message->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     message->setPos(24.0, 24.0);
     scene()->setSceneRect(message->boundingRect().translated(message->pos()).adjusted(-20.0, -20.0, 40.0, 40.0));
@@ -791,7 +791,7 @@ void CallGraphView::rebuildScene(bool preserveSelection) {
 
     if(graph_ == nullptr || graph_->nodes().empty()) {
         auto* message = scene()->addText(tr("No call graph data available."));
-        message->setDefaultTextColor(QColor(QStringLiteral("#536B70")));
+        message->setDefaultTextColor(QColor(QStringLiteral("#555555")));
         message->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
         message->setPos(24.0, 24.0);
         scene()->setSceneRect(

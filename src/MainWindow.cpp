@@ -1,6 +1,7 @@
 #include "MainWindow.hpp"
 
 #include "AnalysisSession.hpp"
+#include "AssemblyGraphTable.hpp"
 #include "BinaryPatcher.hpp"
 #include "CallGraphPanel.hpp"
 #include "CallGraphView.hpp"
@@ -56,6 +57,7 @@ static constexpr int addressRole = Qt::UserRole + 1;
 static constexpr int directTargetRole = Qt::UserRole + 2;
 static constexpr int instructionKindRole = Qt::UserRole + 3;
 static constexpr int functionNameRole = Qt::UserRole + 4;
+static constexpr int assemblyFunctionAddressRole = Qt::UserRole + 5;
 
 static QLabel* createValueLabel(QWidget* parent, const char* objectName) {
     auto* label = new QLabel(parent);
@@ -121,7 +123,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , analysisSession_(std::make_unique<AnalysisSession>()) {
     setWindowTitle(tr("Decompiler"));
-    resize(1180, 760);
+    resize(1560, 860);
 
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
     auto* openAction = fileMenu->addAction(tr("&Open Binary..."));
@@ -232,6 +234,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* analysisSplitter = new QSplitter(Qt::Horizontal, centralWidget);
     analysisSplitter->setObjectName(QStringLiteral("analysisSplitter"));
+    analysisSplitter->setChildrenCollapsible(false);
 
     auto* functionPanel = new QWidget(analysisSplitter);
     auto* functionLayout = new QVBoxLayout(functionPanel);
@@ -250,14 +253,39 @@ MainWindow::MainWindow(QWidget* parent)
     functionList_->setSelectionMode(QAbstractItemView::SingleSelection);
     functionLayout->addWidget(functionList_, 1);
 
-    auto* detailSplitter = new QSplitter(Qt::Vertical, analysisSplitter);
-    detailSplitter->setObjectName(QStringLiteral("detailSplitter"));
-
-    auto* analysisTabs = new QTabWidget(detailSplitter);
+    auto* analysisTabs = new QTabWidget(analysisSplitter);
     analysisTabs->setObjectName(QStringLiteral("analysisTabs"));
 
-    auto* pseudocodeGroup = new QGroupBox(tr("Reconstructed Pseudocode"), analysisTabs);
+    auto* assemblyGroup = new QGroupBox(tr("Assembly Listing / Control Flow"), analysisTabs);
+    assemblyGroup->setObjectName(QStringLiteral("assemblyPanel"));
+    auto* assemblyLayout = new QVBoxLayout(assemblyGroup);
+    assemblyLayout->setContentsMargins(4, 6, 4, 4);
+    assemblyTable_ = new AssemblyGraphTable(assemblyGroup);
+    assemblyTable_->setObjectName(QStringLiteral("assemblyTable"));
+    assemblyTable_->setColumnCount(4);
+    assemblyTable_->setHorizontalHeaderLabels(
+        {tr("Flow / Function / Address"), tr("Bytes / Opcode"), tr("Mnemonic"), tr("Operand")});
+    assemblyTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    assemblyTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    assemblyTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    assemblyTable_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    assemblyTable_->verticalHeader()->setVisible(false);
+    assemblyTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    assemblyTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    assemblyTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    assemblyTable_->setColumnWidth(0, 340);
+    assemblyLayout->addWidget(assemblyTable_);
+
+    callGraphPanel_ = new CallGraphPanel(analysisTabs);
+    callGraphView_ = callGraphPanel_->graphView();
+    analysisTabs->addTab(assemblyGroup, tr("Assembly"));
+    analysisTabs->addTab(callGraphPanel_, tr("Call Graph"));
+
+    auto* pseudocodeGroup = new QGroupBox(tr("Pseudocode"), analysisSplitter);
+    pseudocodeGroup->setObjectName(QStringLiteral("pseudocodePanel"));
     auto* pseudocodeLayout = new QVBoxLayout(pseudocodeGroup);
+    pseudocodeLayout->setContentsMargins(6, 6, 6, 6);
     auto* pseudocodeSearchLayout = new QHBoxLayout;
     pseudocodeSearch_ = new QLineEdit(pseudocodeGroup);
     pseudocodeSearch_->setObjectName(QStringLiteral("pseudocodeSearch"));
@@ -283,50 +311,13 @@ MainWindow::MainWindow(QWidget* parent)
     new PseudocodeHighlighter(pseudocodeView_->document());
     pseudocodeLayout->addWidget(pseudocodeView_);
 
-    callGraphPanel_ = new CallGraphPanel(analysisTabs);
-    callGraphView_ = callGraphPanel_->graphView();
-
-    analysisTabs->addTab(pseudocodeGroup, tr("Pseudocode"));
-    analysisTabs->addTab(callGraphPanel_, tr("Call Graph"));
-
-    auto* assemblyGroup = new QGroupBox(tr("Assembly / Opcodes"), detailSplitter);
-    auto* assemblyLayout = new QVBoxLayout(assemblyGroup);
-    assemblyTable_ = new QTableWidget(assemblyGroup);
-    assemblyTable_->setObjectName(QStringLiteral("assemblyTable"));
-    assemblyTable_->setColumnCount(4);
-    assemblyTable_->setHorizontalHeaderLabels(
-        {tr("Address"), tr("Bytes / Opcode"), tr("Mnemonic"), tr("Operand")});
-    assemblyTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    assemblyTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    assemblyTable_->setSelectionMode(QAbstractItemView::SingleSelection);
-    assemblyTable_->setAlternatingRowColors(true);
-    assemblyTable_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    assemblyTable_->verticalHeader()->setVisible(false);
-    assemblyTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    assemblyTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    assemblyTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    assemblyTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    assemblyLayout->addWidget(assemblyTable_);
-
-    connect(analysisTabs, &QTabWidget::currentChanged, this, [assemblyGroup, detailSplitter](int index) {
-        const bool callGraphIsActive = index == 1;
-        assemblyGroup->setVisible(!callGraphIsActive);
-        if(!callGraphIsActive) {
-            detailSplitter->setSizes({320, 320});
-        }
-    });
-
-    detailSplitter->addWidget(analysisTabs);
-    detailSplitter->addWidget(assemblyGroup);
-    detailSplitter->setStretchFactor(0, 1);
-    detailSplitter->setStretchFactor(1, 1);
-    detailSplitter->setSizes({320, 320});
-
     analysisSplitter->addWidget(functionPanel);
-    analysisSplitter->addWidget(detailSplitter);
+    analysisSplitter->addWidget(analysisTabs);
+    analysisSplitter->addWidget(pseudocodeGroup);
     analysisSplitter->setStretchFactor(0, 1);
     analysisSplitter->setStretchFactor(1, 4);
-    analysisSplitter->setSizes({260, 900});
+    analysisSplitter->setStretchFactor(2, 2);
+    analysisSplitter->setSizes({240, 830, 470});
     pageLayout->addWidget(analysisSplitter, 1);
     setCentralWidget(centralWidget);
 
@@ -352,6 +343,23 @@ MainWindow::MainWindow(QWidget* parent)
         [this](int currentRow, int, int, int) {
             patchInstructionAction_->setEnabled(
                 analysisSession_->isValid() && currentRow >= 0);
+            const auto* addressItem = currentRow >= 0
+                                          ? assemblyTable_->item(currentRow, 0)
+                                          : nullptr;
+            if(addressItem == nullptr || functionList_->currentItem() == nullptr) {
+                return;
+            }
+            const auto assemblyFunction = addressItem
+                                              ->data(assemblyFunctionAddressRole)
+                                              .toULongLong();
+            const auto selectedFunction = functionList_->currentItem()
+                                              ->data(addressRole)
+                                              .toULongLong();
+            if(assemblyFunction != selectedFunction) {
+                suppressAssemblyFocus_ = true;
+                static_cast<void>(selectFunction(assemblyFunction));
+                suppressAssemblyFocus_ = false;
+            }
         });
     connect(pseudocodeSearch_, &QLineEdit::returnPressed, this, [this] {
         findPseudocodeText(false);
@@ -418,6 +426,7 @@ bool MainWindow::loadBinary(const std::filesystem::path& path) {
 
     updateBinaryInformation();
     populateFunctionList();
+    populateAssemblyListing();
     updatePseudocodeCallTargets();
     callGraphPanel_->setGraph(analysisSession_->callGraph());
 
@@ -665,8 +674,13 @@ void MainWindow::clearAnalysisViews() {
     pseudocodeView_->setCallTargets({});
     pseudocodeView_->clear();
     callGraphPanel_->clearGraph();
+    assemblyTable_->clearFlowEdges();
     assemblyTable_->clearContents();
     assemblyTable_->setRowCount(0);
+    assemblyFunctionRows_.clear();
+    assemblyFunctionInstructionCounts_.clear();
+    preserveAssemblyEntryOnNextSelection_ = false;
+    suppressAssemblyFocus_ = false;
     patchInstructionAction_->setEnabled(false);
 }
 
@@ -720,6 +734,165 @@ void MainWindow::populateFunctionList() {
     functionList_->setUpdatesEnabled(true);
 }
 
+void MainWindow::populateAssemblyListing() {
+    assemblyTable_->setUpdatesEnabled(false);
+    assemblyTable_->clearFlowEdges();
+    assemblyTable_->clearContents();
+    assemblyTable_->setRowCount(0);
+    assemblyFunctionRows_.clear();
+    assemblyFunctionInstructionCounts_.clear();
+
+    std::vector<const FunctionInfo*> orderedFunctions;
+    orderedFunctions.reserve(analysisSession_->functions().size());
+    for(const auto& function : analysisSession_->functions()) {
+        const auto* instructions = analysisSession_->instructionsFor(function.address);
+        if(instructions != nullptr && !instructions->empty()) {
+            orderedFunctions.push_back(&function);
+        }
+    }
+    std::sort(
+        orderedFunctions.begin(),
+        orderedFunctions.end(),
+        [](const FunctionInfo* left, const FunctionInfo* right) {
+            return left->address < right->address;
+        });
+
+    const auto entryPoint = analysisSession_->elfLoader().metadata().entryPoint;
+    const auto entryFunction = std::find_if(
+        orderedFunctions.begin(), orderedFunctions.end(), [entryPoint](const FunctionInfo* function) {
+            return function->address == entryPoint || function->source == FunctionSource::EntryPoint;
+        });
+    if(entryFunction != orderedFunctions.end() && entryFunction != orderedFunctions.begin()) {
+        std::rotate(orderedFunctions.begin(), entryFunction, std::next(entryFunction));
+    }
+
+    std::size_t instructionCount = 0;
+    for(const auto* function : orderedFunctions) {
+        instructionCount += analysisSession_->instructionsFor(function->address)->size();
+    }
+    assemblyTable_->setRowCount(static_cast<int>(instructionCount));
+
+    std::unordered_map<std::uint64_t, int> instructionRows;
+    instructionRows.reserve(instructionCount);
+    struct PendingFlowEdge {
+        int sourceRow = -1;
+        std::uint64_t targetAddress = 0;
+        InstructionKind kind = InstructionKind::Normal;
+    };
+    std::vector<PendingFlowEdge> pendingFlowEdges;
+
+    int row = 0;
+    const QString gutterIndent(16, QLatin1Char(' '));
+    for(const auto* function : orderedFunctions) {
+        const auto* instructions = analysisSession_->instructionsFor(function->address);
+        assemblyFunctionRows_.insert_or_assign(function->address, row);
+        assemblyFunctionInstructionCounts_.insert_or_assign(
+            function->address, instructions->size());
+
+        for(std::size_t index = 0; index < instructions->size(); ++index, ++row) {
+            const auto& instruction = instructions->at(index);
+            auto addressText = gutterIndent + hexadecimal(instruction.address);
+            if(index == 0) {
+                const auto functionName = function->name.empty()
+                                              ? QStringLiteral("sub_%1").arg(
+                                                    QString::number(function->address, 16))
+                                              : QString::fromStdString(function->name);
+                addressText = gutterIndent + functionName + QStringLiteral(":  ")
+                              + hexadecimal(instruction.address);
+            }
+
+            auto* addressItem = new QTableWidgetItem(addressText);
+            auto* bytesItem = new QTableWidgetItem(byteString(instruction.bytes));
+            auto* mnemonicItem = new QTableWidgetItem(
+                QString::fromStdString(instruction.mnemonic));
+            auto* operandItem = new QTableWidgetItem(
+                QString::fromStdString(instruction.operandText));
+
+            addressItem->setData(addressRole, static_cast<qulonglong>(instruction.address));
+            addressItem->setData(
+                assemblyFunctionAddressRole, static_cast<qulonglong>(function->address));
+            addressItem->setData(instructionKindRole, static_cast<int>(instruction.kind));
+            if(instruction.directTarget) {
+                addressItem->setData(
+                    directTargetRole, static_cast<qulonglong>(*instruction.directTarget));
+            }
+
+            const auto toolTip = tr("%1 at %2")
+                                     .arg(QString::fromStdString(function->name))
+                                     .arg(hexadecimal(function->address));
+            addressItem->setToolTip(toolTip);
+            bytesItem->setToolTip(toolTip);
+            mnemonicItem->setToolTip(toolTip);
+            operandItem->setToolTip(toolTip);
+
+            if(index == 0) {
+                auto functionFont = addressItem->font();
+                functionFont.setBold(true);
+                addressItem->setFont(functionFont);
+                const QBrush functionBackground(QColor(QStringLiteral("#EEEEEE")));
+                addressItem->setBackground(functionBackground);
+                bytesItem->setBackground(functionBackground);
+                mnemonicItem->setBackground(functionBackground);
+                operandItem->setBackground(functionBackground);
+            }
+
+            const auto color = instructionColor(instruction.kind);
+            if(color.isValid()) {
+                const QBrush brush(color);
+                addressItem->setForeground(brush);
+                bytesItem->setForeground(brush);
+                mnemonicItem->setForeground(brush);
+                operandItem->setForeground(brush);
+            }
+
+            assemblyTable_->setItem(row, 0, addressItem);
+            assemblyTable_->setItem(row, 1, bytesItem);
+            assemblyTable_->setItem(row, 2, mnemonicItem);
+            assemblyTable_->setItem(row, 3, operandItem);
+            instructionRows.insert_or_assign(instruction.address, row);
+
+            if(instruction.directTarget
+               && (instruction.kind == InstructionKind::ConditionalJump
+                   || instruction.kind == InstructionKind::UnconditionalJump)) {
+                pendingFlowEdges.push_back(PendingFlowEdge {
+                    .sourceRow = row,
+                    .targetAddress = *instruction.directTarget,
+                    .kind = instruction.kind,
+                });
+            }
+        }
+    }
+
+    std::vector<AssemblyFlowEdge> flowEdges;
+    flowEdges.reserve(pendingFlowEdges.size());
+    for(const auto& pending : pendingFlowEdges) {
+        const auto target = instructionRows.find(pending.targetAddress);
+        if(target != instructionRows.end()) {
+            flowEdges.push_back(AssemblyFlowEdge {
+                .sourceRow = pending.sourceRow,
+                .targetRow = target->second,
+                .kind = pending.kind,
+            });
+        }
+    }
+    assemblyTable_->setFlowEdges(std::move(flowEdges));
+    assemblyTable_->setColumnWidth(0, 340);
+    assemblyTable_->setUpdatesEnabled(true);
+    assemblyTable_->scrollToTop();
+    preserveAssemblyEntryOnNextSelection_ = true;
+}
+
+void MainWindow::focusAssemblyFunction(std::uint64_t address) {
+    const auto row = assemblyFunctionRows_.find(address);
+    if(row == assemblyFunctionRows_.end()) {
+        return;
+    }
+    assemblyTable_->setCurrentCell(row->second, 0);
+    if(auto* item = assemblyTable_->item(row->second, 0)) {
+        assemblyTable_->scrollToItem(item, QAbstractItemView::PositionAtTop);
+    }
+}
+
 void MainWindow::filterFunctions(const QString& query) {
     const auto normalizedQuery = query.trimmed().toLower();
     QListWidgetItem* firstVisible = nullptr;
@@ -746,8 +919,6 @@ void MainWindow::filterFunctions(const QString& query) {
 
 void MainWindow::displayFunction(QListWidgetItem* item) {
     pseudocodeView_->clear();
-    assemblyTable_->clearContents();
-    assemblyTable_->setRowCount(0);
     if(item == nullptr) {
         return;
     }
@@ -764,44 +935,16 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
     recordNavigation(functionAddress);
     callGraphPanel_->setActiveFunction(functionAddress);
     pseudocodeView_->setPlainText(QString::fromStdString(*pseudocode));
+    if(preserveAssemblyEntryOnNextSelection_) {
+        preserveAssemblyEntryOnNextSelection_ = false;
+    } else if(!suppressAssemblyFocus_) {
+        focusAssemblyFunction(functionAddress);
+    }
     if(!pseudocodeSearch_->text().isEmpty()) {
         auto cursor = pseudocodeView_->textCursor();
         cursor.movePosition(QTextCursor::Start);
         pseudocodeView_->setTextCursor(cursor);
         findPseudocodeText(false);
-    }
-
-    assemblyTable_->setRowCount(static_cast<int>(instructions->size()));
-    for(std::size_t index = 0; index < instructions->size(); ++index) {
-        const auto& instruction = (*instructions)[index];
-        auto* addressItem = new QTableWidgetItem(hexadecimal(instruction.address));
-        auto* bytesItem = new QTableWidgetItem(byteString(instruction.bytes));
-        auto* mnemonicItem =
-            new QTableWidgetItem(QString::fromStdString(instruction.mnemonic));
-        auto* operandItem =
-            new QTableWidgetItem(QString::fromStdString(instruction.operandText));
-
-        addressItem->setData(addressRole, static_cast<qulonglong>(instruction.address));
-        addressItem->setData(instructionKindRole, static_cast<int>(instruction.kind));
-        if(instruction.directTarget) {
-            addressItem->setData(
-                directTargetRole, static_cast<qulonglong>(*instruction.directTarget));
-        }
-
-        const auto color = instructionColor(instruction.kind);
-        if(color.isValid()) {
-            const QBrush brush(color);
-            addressItem->setForeground(brush);
-            bytesItem->setForeground(brush);
-            mnemonicItem->setForeground(brush);
-            operandItem->setForeground(brush);
-        }
-
-        const auto row = static_cast<int>(index);
-        assemblyTable_->setItem(row, 0, addressItem);
-        assemblyTable_->setItem(row, 1, bytesItem);
-        assemblyTable_->setItem(row, 2, mnemonicItem);
-        assemblyTable_->setItem(row, 3, operandItem);
     }
 
     statusBar()->showMessage(
@@ -812,7 +955,23 @@ void MainWindow::displayFunction(QListWidgetItem* item) {
 }
 
 void MainWindow::navigateFromAssembly(int row) {
-    const auto* addressItem = assemblyTable_->item(row, 0);
+    auto resolvedRow = row;
+    if(functionList_->currentItem() != nullptr) {
+        const auto currentFunction = functionList_->currentItem()
+                                         ->data(addressRole)
+                                         .toULongLong();
+        const auto start = assemblyFunctionRows_.find(currentFunction);
+        const auto count = assemblyFunctionInstructionCounts_.find(currentFunction);
+        if(start != assemblyFunctionRows_.end()
+           && count != assemblyFunctionInstructionCounts_.end()
+           && !(row >= start->second
+                && row < start->second + static_cast<int>(count->second))
+           && row >= 0 && static_cast<std::size_t>(row) < count->second) {
+            resolvedRow = start->second + row;
+        }
+    }
+
+    const auto* addressItem = assemblyTable_->item(resolvedRow, 0);
     if(addressItem == nullptr || !addressItem->data(directTargetRole).isValid()) {
         return;
     }
@@ -844,7 +1003,8 @@ void MainWindow::navigateFromAssembly(int row) {
     }
 
     statusBar()->showMessage(
-        tr("Branch target %1 is outside the current function.").arg(hexadecimal(target)));
+        tr("Branch target %1 is outside the analyzed assembly listing.")
+            .arg(hexadecimal(target)));
 }
 
 void MainWindow::navigateFromPseudocode(std::uint64_t address) {

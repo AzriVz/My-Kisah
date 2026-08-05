@@ -118,15 +118,15 @@ CallGraphPanel::CallGraphPanel(QWidget* parent)
     layout->addWidget(horizontalSplitter, 1);
 
     setStyleSheet(QStringLiteral(
-        "#callGraphPanel { background: #DCE8E9; }"
-        "#callGraphPanel QToolBar { background: #D5E1E2; border: 1px solid #9AADB0; spacing: 2px; }"
+        "#callGraphPanel { background: #F0F0F0; }"
+        "#callGraphPanel QToolBar { background: #E5E5E5; border: 1px solid #A0A0A0; spacing: 2px; }"
         "#callGraphPanel QToolButton { padding: 2px 6px; border: 1px solid transparent; }"
-        "#callGraphPanel QToolButton:hover { background: #EAF3F4; border-color: #859DA0; }"
-        "#callGraphPanel QGroupBox { border: 1px solid #8FA5A8; margin-top: 15px; background: #EAF3F4; }"
+        "#callGraphPanel QToolButton:hover { background: #F5F5F5; border-color: #888888; }"
+        "#callGraphPanel QGroupBox { border: 1px solid #999999; margin-top: 15px; background: #F5F5F5; }"
         "#callGraphPanel QGroupBox::title { subcontrol-origin: margin; left: 5px; padding: 0 3px; }"
-        "#callGraphComponentTable { background: #EDF5F5; alternate-background-color: #E3EEEE; gridline-color: #B4C4C6; }"
-        "#callGraphComponentTable::item:selected { background: #8CBFC8; color: #102020; }"
-        "#callGraphComponentTable QHeaderView::section { background: #CEDCDD; border: 1px solid #9EB0B2; padding: 2px; }"));
+        "#callGraphComponentTable { background: #FFFFFF; alternate-background-color: #F0F0F0; gridline-color: #BDBDBD; }"
+        "#callGraphComponentTable::item:selected { background: #D0D0D0; color: #202020; }"
+        "#callGraphComponentTable QHeaderView::section { background: #E0E0E0; border: 1px solid #A8A8A8; padding: 2px; }"));
 
     connect(zoomInAction, &QAction::triggered, graphView_, &CallGraphView::zoomIn);
     connect(zoomOutAction, &QAction::triggered, graphView_, &CallGraphView::zoomOut);

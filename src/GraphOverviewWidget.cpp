@@ -56,12 +56,12 @@ void GraphOverviewWidget::paintEvent(QPaintEvent* event) {
     static_cast<void>(event);
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), QColor(QStringLiteral("#EAF3F4")));
-    painter.setPen(QPen(QColor(QStringLiteral("#91A7AA")), 1.0));
+    painter.fillRect(rect(), QColor(QStringLiteral("#F5F5F5")));
+    painter.setPen(QPen(QColor(QStringLiteral("#A0A0A0")), 1.0));
     painter.drawRect(rect().adjusted(0, 0, -1, -1));
 
     if(!hasGraphData()) {
-        painter.setPen(QColor(QStringLiteral("#607477")));
+        painter.setPen(QColor(QStringLiteral("#606060")));
         painter.drawText(rect().adjusted(8, 8, -8, -8), Qt::AlignCenter, tr("No graph overview"));
         return;
     }
@@ -84,10 +84,10 @@ void GraphOverviewWidget::paintEvent(QPaintEvent* event) {
         painter.drawRect(nodeBounds);
     }
 
-    QPen viewportPen(QColor(QStringLiteral("#176D91")), 1.8);
+    QPen viewportPen(QColor(QStringLiteral("#4A4A4A")), 1.8);
     viewportPen.setCosmetic(true);
     painter.setPen(viewportPen);
-    painter.setBrush(QColor(45, 138, 174, 35));
+    painter.setBrush(QColor(0, 0, 0, 24));
     painter.drawRect(graphView_->viewportSceneRect());
     painter.restore();
 }

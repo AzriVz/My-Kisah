@@ -67,6 +67,7 @@ add_library(decompiler_gui STATIC)
 
 target_sources(decompiler_gui
     PRIVATE
+        src/AssemblyGraphTable.cpp
         src/MainWindow.cpp
         src/CallGraphLayoutEngine.cpp
         src/CallGraphPanel.cpp
@@ -76,6 +77,7 @@ target_sources(decompiler_gui
         src/PseudocodeHighlighter.cpp
         src/PseudocodeView.cpp
     PUBLIC
+        include/AssemblyGraphTable.hpp
         include/MainWindow.hpp
         include/CallGraphLayoutEngine.hpp
         include/CallGraphPanel.hpp

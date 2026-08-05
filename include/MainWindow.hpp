@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 class QAction;
@@ -16,11 +17,10 @@ class QListWidget;
 class QListWidgetItem;
 class QProgressBar;
 class QString;
-class QTableWidget;
-
 namespace decompiler {
 
 class AnalysisSession;
+class AssemblyGraphTable;
 class CallGraphPanel;
 class CallGraphView;
 class ElfLoader;
@@ -47,6 +47,8 @@ private:
     void clearAnalysisViews();
     void updateBinaryInformation();
     void populateFunctionList();
+    void populateAssemblyListing();
+    void focusAssemblyFunction(std::uint64_t address);
     void filterFunctions(const QString& query);
     void displayFunction(QListWidgetItem* item);
     void navigateFromAssembly(int row);
@@ -80,14 +82,18 @@ private:
     PseudocodeView* pseudocodeView_ = nullptr;
     CallGraphPanel* callGraphPanel_ = nullptr;
     CallGraphView* callGraphView_ = nullptr;
-    QTableWidget* assemblyTable_ = nullptr;
+    AssemblyGraphTable* assemblyTable_ = nullptr;
     QProgressBar* analysisProgress_ = nullptr;
     QAction* backAction_ = nullptr;
     QAction* forwardAction_ = nullptr;
     QAction* patchInstructionAction_ = nullptr;
+    std::unordered_map<std::uint64_t, int> assemblyFunctionRows_;
+    std::unordered_map<std::uint64_t, std::size_t> assemblyFunctionInstructionCounts_;
     std::vector<std::uint64_t> navigationHistory_;
     std::ptrdiff_t navigationIndex_ = -1;
     bool restoringNavigation_ = false;
+    bool preserveAssemblyEntryOnNextSelection_ = false;
+    bool suppressAssemblyFocus_ = false;
 };
 
 } // namespace decompiler
