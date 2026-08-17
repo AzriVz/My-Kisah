@@ -1,6 +1,6 @@
-# Decompiler
+# My-Kisah
 
-Decompiler adalah aplikasi desktop C++20 berbasis Qt 6 untuk menganalisis executable ELF64 x86-64. Aplikasi menampilkan metadata binary, Symbol Tree, assembly beserta alur branch, Call Graph, dan pseudocode C++-like.
+Program ini merupakan aplikasi desktop C++20 berbasis Qt 6 untuk menganalisis executable ELF64 x86-64. Aplikasi menampilkan metadata binary, Symbol Tree, assembly beserta alur branch, Call Graph, dan pseudocode C++-like.
 
 Pseudocode yang dihasilkan merupakan rekonstruksi semantik dari instruksi binary. Output tidak diklaim sebagai source code asli karena nama variabel, tipe, dan struktur source umumnya sudah hilang setelah proses kompilasi.
 
